@@ -15,7 +15,7 @@ std::string_view AbstractNode::version = "1.0.0";
 AbstractNode::AbstractNode(std::unique_ptr<AbstractConnection> &&conn)
         :_conn(std::move(conn)), _enc(kjson::OutputType::ascii)
 {
-    _conn->start_listen(this);
+
 }
 
 AbstractNode::~AbstractNode() {
@@ -26,6 +26,11 @@ AbstractConnection& AbstractNode::get_connection() {
     return *_conn;
 }
 
+void AbstractNode::set_connection(std::unique_ptr<AbstractConnection> &&conn) {
+    if (_conn != nullptr) _conn->stop_listen();
+    _conn = std::move(conn);
+    _conn->start_listen(this);
+}
 
 void AbstractNode::parse_message(const MessageRef &msg) {
     if (msg.type == MessageType::binary) {
@@ -194,7 +199,10 @@ void AbstractNode::send_var_set(const std::string_view &variable,const kjson::Va
 }
 
 void AbstractNode::stop() {
-    _conn->stop_listen();
+    if (_conn != nullptr) {
+        _conn->stop_listen();
+        _conn = nullptr;
+    }
 }
 
 

@@ -39,13 +39,17 @@ enum class NodeError {
 class AbstractNode: protected AbstractConnectionListener {
 public:
 
-    AbstractNode(std::unique_ptr<AbstractConnection> &&conn);
+    using PConnection = std::unique_ptr<AbstractConnection>;
+
+
+    AbstractNode();
 
     virtual ~AbstractNode();
 
     ///Gets associated connection
     virtual AbstractConnection &get_connection();
 
+    virtual void set_connection(PConnection &&conn);
 
     ///handle call request
     /**
@@ -262,7 +266,6 @@ protected:
     Message prepareMessage1(char type, std::string_view id, kjson::Value data);
     Message prepareMessage(char type, std::string_view id);
 
-    std::unordered_set<std::string> unsubscribed_topics;
 
 
 };

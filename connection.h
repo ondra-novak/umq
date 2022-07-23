@@ -25,6 +25,7 @@ public:
 class AbstractConnection {
 public:
 
+
     virtual ~AbstractConnection() = default;
 
     ///send message to the other side
