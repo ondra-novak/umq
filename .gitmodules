@@ -1,0 +1,9 @@
+[submodule "tests/userver"]
+	path = tests/userver
+	url = https://github.com/ondra-novak/userver
+[submodule "tests/kissjson"]
+	path = tests/kissjson
+	url = https://github.com/ondra-novak/kiss-json
+[submodule "tests/shared"]
+	path = tests/shared
+	url = https://github.com/ondra-novak/ondra_shared
