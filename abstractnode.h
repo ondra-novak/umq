@@ -15,8 +15,25 @@
 
 #include "connection.h"
 
+#include <unordered_set>
 
 namespace umq {
+
+enum class NodeError {
+    noError = 0,
+    unexpectedBinaryFrame,
+    messageParseError,
+    invalidMessageFormat,
+    invalidMesssgeFormat_Call,
+    invalidMessageFormat_Result,
+    invalidMessageFormat_Exception,
+    invalidMessageFormat_UnknownMethod,
+    invalidMessageFormat_TopicUpdate,
+    unknownMessageType,
+    messageProcessingError,
+    unsupportedVersion,
+    unhandledException,
+};
 
 
 class AbstractNode: protected AbstractConnectionListener {
@@ -28,6 +45,7 @@ public:
 
     ///Gets associated connection
     virtual AbstractConnection &get_connection();
+
 
     ///handle call request
     /**
@@ -118,6 +136,12 @@ public:
     ///Arrives other node configuration
     virtual void on_set_var(const std::string_view &variable, const kjson::Value &data) = 0;
 
+    ///Called when connection switches to disconnected mode
+    /** in this mode no message can arrive and no message can be send, only way to continue is to
+     * destroy the node, or reconnect the node.
+     */
+    virtual void on_disconnect() =0;
+
     ///Parse message from connection
     virtual void parse_message(const MessageRef &msg);
 
@@ -139,6 +163,9 @@ public:
      * @param data data of topic
      * @retval true topic update sent
      * @retval false other side unsubscribed this topic
+     *
+     * @note default implementation always returns true. Extending class can implement own logic
+     *
      */
     virtual bool send_topic_update(const std::string_view &topic_id, const kjson::Value &data);
 
@@ -160,6 +187,8 @@ public:
     /**
      * @param id id of request
      * @param data data of request
+     *
+     *
      */
     virtual void send_result(const std::string_view &id, const kjson::Value &data);
 
@@ -169,6 +198,8 @@ public:
      * @param data data of request
      */
     virtual void send_exception(const std::string_view &id, const kjson::Value &data);
+
+    virtual void send_exception(const std::string_view &id, int code, const std::string_view &message);
 
     ///Sends about unknown method
     /**
@@ -212,8 +243,27 @@ public:
      */
     virtual void stop();
 
+    void set_encoding(kjson::OutputType ot);
+
+    kjson::OutputType get_encoding() const;
+
+    static const char *error_to_string(NodeError err);
+
 protected:
     std::unique_ptr<AbstractConnection> _conn;
+    kjson::OutputType _enc;
+
+    void send_node_error(NodeError error);
+
+    static std::string_view version;
+
+    static std::string prepareHdr(char type, const std::string_view &id);
+    Message prepareMessage(char type, std::string_view id, kjson::Array data);
+    Message prepareMessage1(char type, std::string_view id, kjson::Value data);
+    Message prepareMessage(char type, std::string_view id);
+
+    std::unordered_set<std::string> unsubscribed_topics;
+
 
 };
 

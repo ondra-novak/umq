@@ -55,6 +55,15 @@ public:
      */
     virtual void stop_listen() = 0;
 
+
+    ///Switches connection to disconnected state
+    /**
+     * The disconnected state is final state, the connection must be destroyed. But
+     * this allows to give to other side signal, that connection is closed and also
+     * prevents to send more messages
+     */
+    virtual void disconnect() = 0;
+
 };
 
 }
