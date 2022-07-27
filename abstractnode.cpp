@@ -12,8 +12,8 @@ namespace umq {
 
 std::string_view AbstractNode::version = "1.0.0";
 
-AbstractNode::AbstractNode(std::unique_ptr<AbstractConnection> &&conn)
-        :_conn(std::move(conn)), _enc(kjson::OutputType::ascii)
+AbstractNode::AbstractNode()
+        : _enc(kjson::OutputType::ascii)
 {
 
 }

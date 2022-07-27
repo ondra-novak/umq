@@ -9,7 +9,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin/)
 include_directories(BEFORE tests)
 
 add_compile_options(-Wall -Wno-noexcept-type)
-add_library (umq abstractnode.cpp)
+add_library (umq abstractnode.cpp
+				 node.cpp
+			     request.cpp)
 
 add_subdirectory (tests)
 add_subdirectory (tests/userver)
