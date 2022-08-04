@@ -27,7 +27,6 @@ AbstractConnection& AbstractNode::get_connection() {
 }
 
 void AbstractNode::set_connection(std::unique_ptr<AbstractConnection> &&conn) {
-    if (_conn != nullptr) _conn->stop_listen();
     _conn = std::move(conn);
     _conn->start_listen(this);
 }
@@ -200,7 +199,6 @@ void AbstractNode::send_var_set(const std::string_view &variable,const kjson::Va
 
 void AbstractNode::stop() {
     if (_conn != nullptr) {
-        _conn->stop_listen();
         _conn = nullptr;
     }
 }

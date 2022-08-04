@@ -1,9 +1,9 @@
 #include "request.h"
 
-#include "node.h"
+#include "peer.h"
 namespace umq {
 
-Request::Request(const PWkNode &node, const std::string_view &id,
+Request::Request(const PWkPeer &node, const std::string_view &id,
 		const std::string_view &method_name, const kjson::Value &args)
 :_node(node)
 ,_id(id)
@@ -18,7 +18,7 @@ Request::~Request() {
 
 void Request::set_result(const kjson::Value &val) {
 	if (_response_sent) return;
-	PNode nd = _node.lock();
+	PPeer nd = _node.lock();
 	if (nd != nullptr) {
 		nd->send_result(_id,val);
 	}
@@ -27,7 +27,7 @@ void Request::set_result(const kjson::Value &val) {
 
 void Request::set_exception(const kjson::Value &val) {
 	if (_response_sent) return;
-	PNode nd = _node.lock();
+	PPeer nd = _node.lock();
 	if (nd != nullptr) {
 		nd->send_exception(_id,val);
 	}
@@ -52,7 +52,7 @@ void Request::set_exception(int code, const std::string_view &message,
 
 void Request::signal_unknown_call(const std::string_view &reason) {
 	if (_response_sent) return;
-	PNode nd = _node.lock();
+	PPeer nd = _node.lock();
 	if (nd != nullptr) {
 		nd->send_unknown_method(_id,reason);
 	}

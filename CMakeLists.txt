@@ -10,7 +10,9 @@ include_directories(BEFORE tests)
 
 add_compile_options(-Wall -Wno-noexcept-type)
 add_library (umq abstractnode.cpp
-				 node.cpp
+				 peer.cpp
+				 publisher.cpp
+				 wsconnection.cpp
 			     request.cpp)
 
 add_subdirectory (tests)

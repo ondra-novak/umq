@@ -10,6 +10,8 @@
 
 namespace umq {
 
+struct MessageRef;
+
 class AbstractConnectionListener {
 public:
 
@@ -49,14 +51,6 @@ public:
      */
     virtual void start_listen(AbstractConnectionListener *listener) = 0;
 
-    ///Stops listening
-    /**
-     * Function blocks until there is no pending message. After return, the connection
-     * can be destroyed
-     */
-    virtual void stop_listen() = 0;
-
-
     ///Switches connection to disconnected state
     /**
      * The disconnected state is final state, the connection must be destroyed. But
@@ -65,6 +59,16 @@ public:
      */
     virtual void disconnect() = 0;
 
+    ///tests, whether high watermark reached
+    /**
+     * @param v value of high watermark
+     * @retval true reached
+     * @retval false not reached
+     */
+    virtual bool is_hwm(std::size_t v)  = 0;
+
+    ///flushes all data (synchronously)
+    virtual void flush() = 0;
 };
 
 }

@@ -7,22 +7,31 @@
 
 namespace umq {
 
-class Node;
+class Peer;
 
-using PNode = std::shared_ptr<Node>;
-using PWkNode = std::weak_ptr<Node>;
+using PPeer = std::shared_ptr<Peer>;
+using PWkPeer = std::weak_ptr<Peer>;
+
+enum class TopicUpdateResult {
+	///operation ok - data published
+	ok,
+	///operation ok - however HWM reached, next publish will be slowed down
+	slow,
+	///remove subscriber from the publisher
+	remove,
+};
 
 ///Callback when topic update - but if data are 'undefined', then topic is closed
 /** @param data - data of topic
  * @retval true continue receive topic
  * @retval false stop receive topic (unsubscribe)
  */
-using TopicUpdateCallback = ondra_shared::Callback<bool(kjson::Value data)>;
+using TopicUpdateCallback = ondra_shared::Callback<TopicUpdateResult(kjson::Value data)>;
 
 
 class Request {
 public:
-	Request(const PWkNode &node,
+	Request(const PWkPeer &node,
 			const std::string_view &id,
 			const std::string_view &method_name,
 			const kjson::Value &args);
@@ -48,7 +57,7 @@ public:
 protected:
 
 	///shared pointer to owner's node
-	std::weak_ptr<Node> _node;
+	std::weak_ptr<Peer> _node;
 	///id
 	std::string _id;
     ///contains name of method

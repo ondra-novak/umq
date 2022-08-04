@@ -7,6 +7,8 @@
 
 #ifndef LIB_UMQ_NODE_H_32130djwoeijd08923jdeioew
 #define LIB_UMQ_NODE_H_32130djwoeijd08923jdeioew
+#include "peer.h"
+
 #include "abstractnode.h"
 #include "methodlist.h"
 #include <shared/callback.h>
@@ -22,16 +24,40 @@ using HelloRequest = ondra_shared::Callback<kjson::Value(const kjson::Value)>;
 ///Called in client when welcome request arrived. From this point, node is ready
 using WelcomeResponse = ondra_shared::Callback<void(const kjson::Value)>;
 ///Called to unsubscribe topic by subscriber
-using UnsubscribeRequest = ondra_shared::Callback<void(const std::string_view &)>;
+using UnsubscribeRequest = ondra_shared::Callback<void()>;
 ///called when node disconnects, before it is destroyed
-using DisconnectEvent = ondra_shared::Callback<void(Node &nd)>;
+using DisconnectEvent = ondra_shared::Callback<void()>;
 
 using BinaryContentEvent = ondra_shared::Callback<void(const std::string_view &hash, const std::string_view &content)>;
 
 
-class Node: protected AbstractNode, public std::enable_shared_from_this<Node> {
+class Peer: protected AbstractNode, public std::enable_shared_from_this<Peer> {
 public:
 
+	Peer();
+
+	~Peer();
+    ///Called on disconnect to handle extra cleanup or try to reconnect
+    /**
+     * You should set this handler before the peer is initialized. For
+     * client peers (this is server), you can use keep_until_disconnected which
+     * heavily uses weak pointers (PWkPeer) to hold reference to the
+     * peer's instance without allowing it to release on disconnect.
+     *
+     * @param disconnect function called when peer is disconnected
+     *
+     * @note once the peer is disconnected, there is no way to reconnect
+     * it back again. It is better to estabilish a new connection with
+     * a new Peer instance.
+     */
+    void on_disconnect(DisconnectEvent &&disconnect);
+
+    ///Keeps peer object referenced until it is disconnected
+    /** this allows to have object initialized and active
+     * until it is disconnected. Function is implemented as on_disconnect()
+     * so it resets current disconnect handler.
+     */
+    void keep_until_disconnected();
     ///Init server.
     /**
      * The server is side, which accepted connection. This must be called by acceptor.
@@ -96,8 +122,6 @@ public:
      */
     TopicUpdateCallback start_publish(const std::string_view &topic);
 
-
-
     ///Specifies callback function when unsubscribe is requested
     /**
      * @param topic topic name
@@ -127,45 +151,52 @@ public:
      */
     void unsubscribe(const std::string_view &topic);
 
-    ///Called on disconnect to handle extra cleanup or try to reconnect
-    void on_disconnect(DisconnectEvent &&disconnect);
-
-
-    ///Sets remote variable
+    ///Get variable set by peer
     /**
-     * Remote variable is send to the other side to be stored. Other side will
-     * see the variable as local variable
+     * Variables are set by the peer. They can be used to store
+     * peer state, authorization, JWT tokens, etc. These variables
+     * can be read by the other side using this function.
+     *
+     * Only peer can change the variable
+     *
+     * @param name name of the variable
+     * @return Value of the variable, returns undefined if not set
+     */
+    kjson::Value get_peer_variable(const std::string_view &name) const;
+
+    ///Get all peer variables
+    kjson::Object get_peer_variables() const;
+
+    ///Sets the variable
+    /**
+     * Sets a variable associated with the connection.
+     * The variable is visible to the peer.
      *
      * @param name name of the variable
      * @param value content of variable
      */
-    void set_remote_variable(const std::string_view &name, const kjson::Value &value);
+    void set_variable(const std::string_view &name, const kjson::Value &value);
 
-    ///Retrieves remote variable
+    ///Sets multiple variables
     /**
-     * Retrieves copy of remote variable as it is backed at node.      *
+     * @param variables json-object contains multiple variables
+     */
+    void set_variables(const kjson::Object &variables);
+
+    ///Retrieves variable
+    /**
+     * Retrieves value of a variable set by the function set_variable
      *
      * @param name name of variable
      * @return value content of variable
      */
-    kjson::Value get_remote_variable(const std::string_view &name) const;
+    kjson::Value get_variable(const std::string_view &name) const;
 
-    ///Retrieves remote variables
+    ///Retrieves all variables as single json-object
     /**
-     * Retrieves copy of remote variable as it is backed at node.      *
-     *
-     * @param name name of variable
      * @return value content of variable
      */
-    kjson::Value get_remote_variables() const;
-
-    ///Retrieve local variable - variable stored by remote side locally
-    /**
-     * @param name name of the variable.
-     * @return content of the variable
-     */
-    kjson::Value get_local_variable(const std::string_view &name) const;
-
+    kjson::Object get_variables() const;
 
     ///Registers binary content
     /**
@@ -188,6 +219,12 @@ public:
      */
     void expect_binary(const std::string_view &hash, BinaryContentEvent &&event);
 
+    void set_hwm(std::size_t sz);
+
+    std::size_t get_hwm() const;
+
+    static std::size_t default_hwm;
+
 protected:
 
     friend class Request;
@@ -205,13 +242,16 @@ protected:
 	virtual void on_unknown_method(const std::string_view &id, const std::string_view &method_name);
 	virtual bool on_binary_message(const umq::MessageRef &msg);
 	virtual void on_set_var(const std::string_view &variable, const kjson::Value &data);
+    virtual void on_disconnect() override;
+
+
 protected:
 
     using Topics = std::map<std::string, UnsubscribeRequest, std::less<> >;
     using Subscriptions = std::map<std::string, TopicUpdateCallback, std::less<> >;
     using HashMap = std::multimap<std::string, BinaryContentEvent, std::less<> >;
     using CallMap = std::map<std::string, ResponseCallback, std::less<> >;
-
+    using VarMap = std::map<std::string, kjson::Value, std::less<> >;
 
 
     PMethodList _methods;
@@ -221,11 +261,12 @@ protected:
     HashMap _hash_map;
     HelloRequest _hello_cb;
     WelcomeResponse _welcome_cb;
+    DisconnectEvent _discnt_cb;
+    VarMap _var_map;
+    VarMap _local_var_map;
+    std::size_t _hwm;
 
-    std::shared_timed_mutex _topic_lock;
-    std::shared_timed_mutex _subscr_lock;
-    std::mutex _hashmap_lock;
-    std::mutex _callmap_lock;
+    mutable std::shared_timed_mutex _lock;
     unsigned int _call_id = 0;
 
 
@@ -235,6 +276,7 @@ protected:
 
     static std::string calc_hash(const std::string_view &bin_content);
 
+    bool handle_slow_mode;
 };
 }
 
