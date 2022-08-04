@@ -52,9 +52,9 @@ protected:
 
 	void finish_write(bool ok);
     void disconnect();
-
-
 };
+
+
 
 
 
