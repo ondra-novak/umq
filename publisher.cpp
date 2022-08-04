@@ -29,25 +29,12 @@ void Publisher::unsubscribe(std::size_t id) {
 bool Publisher::publish(const kjson::Value &v) {
 	std::unique_lock _(_mx);
 	auto iter = std::remove_if(_subs.begin(), _subs.end(), [&](Subscriber &s){
-		auto r = s.cb(v);
-		switch(r) {
-		case TopicUpdateResult::ok: return false;
-		case TopicUpdateResult::slow: {
-			if (_enable_slow) return false;
-			s.cb(kjson::Value());
-			return true;
-		}
-		default: return true;
-		}
+		return !s.cb(v);
 	});
 	_subs.erase(iter, _subs.end());
 	return !empty();
 }
 
-void Publisher::enable_slow_subscribers(bool slow) {
-	std::unique_lock _(_mx);
-	_enable_slow = slow;
-}
 
 UnsubscribeRequest Publisher::create_unsub_request(std::size_t id) {
 	return UnsubscribeRequest([this,id]{
@@ -70,11 +57,6 @@ void Publisher::reset() {
 	for (auto &s: x) {
 		s.cb(kjson::Value());
 	}
-}
-
-bool Publisher::are_slow_subscribers_enabled() const {
-	std::unique_lock _(_mx);
-	return _enable_slow;
 }
 
 bool Publisher::empty() const {

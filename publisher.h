@@ -39,15 +39,6 @@ public:
 	 */
 	bool publish(const kjson::Value &v);
 
-	///Enables or disables slow subscribers
-	/** When subscriber is slow and this option is disabled,
-	 * the slow subscriber is unsubscribed. If this option is enabled,
-	 * the slow subscriber is left subscribed, which can slow whole publisher
-	 * @param slow enable or disable slow subscribers
-	 */
-	void enable_slow_subscribers(bool slow);
-
-	bool are_slow_subscribers_enabled() const;
 
 	///Create unsubscribe request for given ID
 	UnsubscribeRequest create_unsub_request(std::size_t id);
@@ -72,7 +63,6 @@ protected:
 
 	mutable std::recursive_mutex _mx;
 	std::vector<Subscriber> _subs;
-	bool _enable_slow;
 	std::size_t idcnt = 0;
 
 };

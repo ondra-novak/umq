@@ -12,21 +12,13 @@ class Peer;
 using PPeer = std::shared_ptr<Peer>;
 using PWkPeer = std::weak_ptr<Peer>;
 
-enum class TopicUpdateResult {
-	///operation ok - data published
-	ok,
-	///operation ok - however HWM reached, next publish will be slowed down
-	slow,
-	///remove subscriber from the publisher
-	remove,
-};
 
 ///Callback when topic update - but if data are 'undefined', then topic is closed
 /** @param data - data of topic
  * @retval true continue receive topic
  * @retval false stop receive topic (unsubscribe)
  */
-using TopicUpdateCallback = ondra_shared::Callback<TopicUpdateResult(kjson::Value data)>;
+using TopicUpdateCallback = ondra_shared::Callback<bool(kjson::Value data)>;
 
 
 class Request {
