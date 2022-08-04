@@ -4,16 +4,15 @@
 namespace umq {
 
 WSConnection::WSConnection(userver::Stream &&s, bool client)
-:_s(std::move(s)),_wss(client)
+:_client(client),_s(std::move(s)),_wss(client),_wss_from_listener(client),_listener(nullptr)
 {
 }
 
 void WSConnection::disconnect() {
-	std::unique_lock _(_mx);
-	if (!_disconnected) {
-		_disconnected = true;
-		if (_listener) _listener->on_disconnect();
-	}
+    bool c = false;
+    if (_disconnected.compare_exchange_strong(c, true)) {
+        if (_listener) _listener->on_disconnect();
+    }
 }
 
 void WSConnection::start_listen(AbstractConnectionListener *listener) {
@@ -22,19 +21,16 @@ void WSConnection::start_listen(AbstractConnectionListener *listener) {
 }
 
 void WSConnection::flush() {
-	std::unique_lock _(_mx);
 	if (_disconnected) return;
 	std::promise<bool> p;
 	_s.write(std::string_view(), false) >> [&](bool x) {
 		p.set_value(x);
 	};
-	_.unlock();
 	bool z = p.get_future().get();
 	if (!z) disconnect();
 }
 
 bool WSConnection::send_message(const MessageRef &msg) {
-	std::unique_lock _(_mx);
 	if (_disconnected) return false;
 	switch(msg.type) {
 	case MessageType::binary:
@@ -57,6 +53,7 @@ bool WSConnection::is_hwm(std::size_t v) {
 }
 
 WSConnection::~WSConnection() {
+    //this prevents to call listener when WSConnection::disconnect() is called from listen_cycle
 	_disconnected = true;
 }
 
@@ -114,22 +111,19 @@ void WSConnection::listen_cycle() {
 }
 
 void WSConnection::send_close() {
-	std::unique_lock _(_mx);
-	_s.write(_wss.forgeCloseFrame(),true) >> [=](bool ok){
+	_s.write(_wss_from_listener.forgeCloseFrame(),true) >> [=](bool ok){
 		finish_write(ok);
 	};
 }
 
 void WSConnection::send_ping() {
-	std::unique_lock _(_mx);
-	_s.write(_wss.forgePingFrame(std::string_view()),true) >> [=](bool ok){
+	_s.write(_wss_from_listener.forgePingFrame(std::string_view()),true) >> [=](bool ok){
 		finish_write(ok);
 	};
 }
 
 void WSConnection::send_pong(std::string_view data) {
-	std::unique_lock _(_mx);
-	_s.write(_wss.forgePongFrame(data),true) >> [=](bool ok){
+	_s.write(_wss_from_listener.forgePongFrame(data),true) >> [=](bool ok){
 		finish_write(ok);
 	};
 }

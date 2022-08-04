@@ -17,22 +17,25 @@ std::size_t Publisher::subscribe(TopicUpdateCallback &cb) {
 
 void Publisher::unsubscribe(std::size_t id) {
 	std::unique_lock _(_mx);
-	auto iter = std::lower_bound(_subs.begin(), _subs.end(), Subscriber{id},
-			[](const Subscriber &a, const Subscriber &b) {
-		return a.id < b.id;
-	});
-	if (iter != _subs.end() && iter->id == id) {
-		_subs.erase(iter);
-	}
+	auto iter = std::lower_bound(_unsubs.begin(), _unsubs.end(), id,
+	        [](std::size_t a, std::size_t b) {return a<b;});
+	_unsubs.insert(iter, id);
+	if (!_inp) do_unsubscribe();
 }
 
 bool Publisher::publish(const kjson::Value &v) {
 	std::unique_lock _(_mx);
-	auto iter = std::remove_if(_subs.begin(), _subs.end(), [&](Subscriber &s){
-		return !s.cb(v);
-	});
-	_subs.erase(iter, _subs.end());
-	return !empty();
+	_inp = true;
+	for (const auto &x: _subs) {
+	    try {
+	        if (!x.cb(v)) _unsubs.push_back(x.id);
+	    } catch (...) {
+	        _unsubs.push_back(x.id);
+	    }
+	}
+	do_unsubscribe();
+	_inp = false;
+	return !_subs.empty();
 }
 
 
@@ -52,16 +55,36 @@ UnsubscribeRequest Publisher::create_unsub_request(
 
 void Publisher::reset() {
 	std::unique_lock _(_mx);
-	std::vector<Subscriber> x = std::move(_subs);
-	_.unlock();
-	for (auto &s: x) {
-		s.cb(kjson::Value());
-	}
+    std::vector<Subscriber> x = std::move(_subs);
+    _.unlock();
+    for (auto &s: x) {
+        s.cb(kjson::Value());
+    }
+    _unsubs.clear();
 }
 
 bool Publisher::empty() const {
 	std::unique_lock _(_mx);
 	return _subs.empty();
+}
+
+void Publisher::do_unsubscribe() {
+    auto iter =  _unsubs.begin();
+    auto iend = _unsubs.end();
+    //_unsubs is ordered by id
+    //_subs is ordered by id
+    auto r = std::remove_if(_subs.begin(),_subs.end(), [&](const Subscriber &s){
+        while (iter != iend && *iter < s.id) {
+            ++iter;
+        }
+        if (iter != iend && *iter == s.id) {
+                ++iter;return true;
+        } else {
+            return false;
+        }
+    });
+    _unsubs.clear();
+    _subs.erase(r, _subs.end());
 }
 
 }

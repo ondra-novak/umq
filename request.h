@@ -20,6 +20,8 @@ using PWkPeer = std::weak_ptr<Peer>;
  */
 using TopicUpdateCallback = ondra_shared::Callback<bool(kjson::Value data)>;
 
+using BinaryTopicUpdateCallback = ondra_shared::Callback<bool(const std::string_view &data)>;
+
 
 class Request {
 public:
@@ -65,9 +67,14 @@ class Response {
 public:
 
 	enum class ResponseType {
+	    ///response contains a valid result
 	    result,
+	    ///response contains exception thrown from method
 	    exception,
-	    method_not_found
+	    ///response contains reason, why method cannot be executed
+	    execute_error,
+	    ///response is empty, request was not processed because peer is disconnected
+	    disconnected
 	};
 
 	Response(ResponseType type, kjson::Value data)
@@ -79,13 +86,14 @@ public:
 	kjson::Value get_exception() const{
 		if (t == ResponseType::exception) return d; else return kjson::Value();
 	}
-	std::string_view get_unknown_method_reason() const{
-		if (t == ResponseType::method_not_found) return d.get_string(); else return std::string_view();
+	std::string_view get_execute_error() const{
+		if (t == ResponseType::execute_error) return d.get_string(); else return std::string_view();
 	}
 
 	bool has_result() const {return t == ResponseType::result;}
 	bool has_exception() const {return t == ResponseType::exception;}
-	bool has_unknown_method_error() const {return t == ResponseType::method_not_found;}
+	bool has_execute_error() const {return t == ResponseType::execute_error;}
+	bool has_disconnected() const {return t == ResponseType::disconnected;}
 protected:
 	kjson::Value d;
 	ResponseType t;

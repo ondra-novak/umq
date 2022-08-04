@@ -63,7 +63,24 @@ protected:
 
 	mutable std::recursive_mutex _mx;
 	std::vector<Subscriber> _subs;
+	std::vector<std::size_t> _unsubs;
 	std::size_t idcnt = 0;
+	/** in progress = true?
+	 *
+	 * Because recursive_mutex is used, it is possible to call unsubscribe from
+	 * the subscriber during publish cycle. This can harm publishing cycle. So
+	 * if the _inp is true, unsubscribe requests are collected in _unsubs array,
+	 * which is ordered by id. Once the publish cycle is finished, all
+	 * marked subscribers are removed from the _subs. So it is now possible to call
+	 * unsubscribe from the subscriber, which has the same effect as returning false
+	 * from the subscriber. It is also possible to unsubscribe other subscribers.
+	 * (this can happen, when during publishing, the subscriber's connection is closed,
+	 * which can cause massive unsubscribe of all topics on the connection
+	 *
+	 */
+	bool _inp = false;
+
+	void do_unsubscribe();
 
 };
 

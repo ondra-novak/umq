@@ -185,50 +185,18 @@ pulling side       pushing side
 ```
 
 
-## Binarní data
+## Binární data
 
-Binární data nemají žádný specifický formát a jsou posílány binárním frame. Identifikaci těchto dat se provádí pomocí HASH (SHA1) v Base64. 
+Binární data jsou adresována pořadím binární zprávy ve streamu. První binární zpráva má číslo 0, další 1, další 2 atd.
 
-Binární data je potřeba ohlásít dopředu, například pomocí Call
+Způsob odeslání je následující:
 
-```
-["C1","put_file","data.txt",["hash1","hash2","hash3",....]]
-<binary frame hash1>
-<binary frame hash2>
-<binary frame hash3>
-                                 [R1,true]
-```
+1. odesílatel musí předat čísla binárních zpráv příjemci. Použije jakoukoliv textovou zprávu
+2. předtím než odešle textovou zprávu si může rezervovat jednu nebo víc binárních zpráv v pořadí, a získá jejich ID
+3. předá ID pomocí textové zprávy
+4. následně odešle binární zprávy v zadaném pořadí
 
-Server na základě přijetí zprávy C1 registruje uvedené hashe pro příjem. Pokud je přijat
-patřičný binarní frame, pak je předán otevřenému requestu, zároveň je hash smazán. 
-(1 hash může být registrován vícekrát, pak se ale musí poslat vícekrát stejný úsek dat - nicméně může existovat domluva, že více stejných hashů v rámci jedné metody nebude znamenat vícenásobnou registraci).
+Na přijímací straně se nejprve registrují pod danná ID patřičné callbacky. Ty se přijetím zpráv zase odregistrují.
 
-Binární framy je doporučeno posílat v dohodnutém pořadí
-
-Volba formátu hashe může být určen prefixem
-
-```
-md5:xxxxxxx
-sha1:xxxxxx
-ripemd160:xxxxxxx
-sha256:xxxxxxxx
-```
-Hash bez identifikace je `sha1`
-
-
-
-Binární data lze zasílat i zprávou **Topic** nebo i **Response**. 
-
-```
-["Tchanges","data.txt",["hash1","hash2","hash3",....]]
-<binary frame hash1>
-<binary frame hash2>
-<binary frame hash3>
-```
-
-
-Implementace: Oba uzly mohou registrovat hash a callback, který se zavolá, pokud je přijat
-binární frame s odpovídajícím hashem. Pokud uzel přijme binární frame, spočítá hash a pokud najde registraci, je zavolán patřičný callback a registrace je smazána. Pokud je přijat binární frame který není registrován, pak je zahozen.
-
-Sekvence binárních framů nemusí být souvislá. Jiné framy jsou povoleny. Pokud se přenáší víc binárních dat současně, mohou se jejich framy střídat
+Předpokládá se, že během přenosu nedochází k přehazování pořadí ve streamu. Pokud ano, je zodpovědností `connection` poskládat binární zprávy ve správném pořadí
 

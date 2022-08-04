@@ -19,9 +19,12 @@ namespace umq {
 class WSConnection: public AbstractConnection {
 public:
 	WSConnection(userver::Stream &&s, bool client);
+
+	WSConnection(const WSConnection &) = delete;
+	WSConnection &operator=(const WSConnection &) = delete;
+
 	~WSConnection();
 
-	virtual void disconnect() override;
 	virtual void start_listen(AbstractConnectionListener *listener) override;
 	virtual void flush() override;
 	virtual bool send_message(const MessageRef &msg) override;
@@ -30,15 +33,16 @@ public:
 
 protected:
 
+	bool _client;
 	userver::Stream _s;
 	userver::WebSocketParser _wsp;
 	userver::WebSocketSerializer _wss;
+	userver::WebSocketSerializer _wss_from_listener;
 
 	AbstractConnectionListener * _listener;
 
 	bool _ping_send = false;
-	bool _disconnected = false;
-	mutable std::recursive_mutex _mx;
+	std::atomic<bool> _disconnected = false;
 
 	void listen_cycle();
 
@@ -47,7 +51,12 @@ protected:
 	void send_pong(std::string_view data);
 
 	void finish_write(bool ok);
+    void disconnect();
+
+
 };
+
+
 
 
 }

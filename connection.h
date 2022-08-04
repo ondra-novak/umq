@@ -7,6 +7,7 @@
 
 #ifndef LIB_UMQ_CONNECTION_H_qwepo23e2k2di902d2d
 #define LIB_UMQ_CONNECTION_H_qwepo23e2k2di902d2d
+#include <cstddef>
 
 namespace umq {
 
@@ -24,6 +25,7 @@ public:
 };
 
 ///Abstract connection for node
+/** NOTE object don't need to be MT Safe. Especially send_message must be interlocked */
 class AbstractConnection {
 public:
 
@@ -50,14 +52,6 @@ public:
      * there is no pending message to be processed.
      */
     virtual void start_listen(AbstractConnectionListener *listener) = 0;
-
-    ///Switches connection to disconnected state
-    /**
-     * The disconnected state is final state, the connection must be destroyed. But
-     * this allows to give to other side signal, that connection is closed and also
-     * prevents to send more messages
-     */
-    virtual void disconnect() = 0;
 
     ///tests, whether high watermark reached
     /**

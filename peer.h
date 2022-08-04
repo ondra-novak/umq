@@ -12,6 +12,7 @@
 
 #include "methodlist.h"
 #include <shared/callback.h>
+#include <deque>
 #include <map>
 #include <memory>
 #include <shared_mutex>
@@ -60,9 +61,7 @@ using UnsubscribeRequest = ondra_shared::Callback<void()>;
 ///called when node disconnects, before it is destroyed
 using DisconnectEvent = ondra_shared::Callback<void()>;
 
-using BinaryContentEvent = ondra_shared::Callback<void(const std::string_view &hash, const std::string_view &content)>;
-
-
+using BinaryContentEvent = ondra_shared::Callback<void(bool valid, const std::string_view &content)>;
 
 class Peer: protected AbstractConnectionListener, public std::enable_shared_from_this<Peer> {
 public:
@@ -127,10 +126,10 @@ public:
     void call(const std::string_view &method, const kjson::Value &params, ResponseCallback &&result);
 
     ///Subscribes given topic
-    /** Doesn't perform actuall subscription, it only prepares
-     * the node to receive a process given subscription. The actual
+    /** Doesn't perform actual subscription, it only prepares
+     * the peer object to receive a process given subscription. The actual
      * subscription is registered via a request. Other side must
-     * respond with a topic, which must be registered immediatelly
+     * respond with a topic, which must be registered immediately
      * while response is being processed. Topic can't be registered
      * later in asynchronous processing, because a message for this
      * topic could be already processed and without proper registration
@@ -160,14 +159,16 @@ public:
      */
     TopicUpdateCallback start_publish(const std::string_view &topic, HighWaterMarkBehavior hwmb = HighWaterMarkBehavior::skip, std::size_t hwm_size = 0);
 
+
     ///Specifies callback function when unsubscribe is requested
     /**
      * @param topic topic name
      * @param cb callback function called when remote node wants to unsubscribe
      * @retval true function registered
-     * @retval false topic is not registered, already unsubscribed, or node is down
+     * @retval false topic is not registered, already unsubscribed, or peer is down
      */
-    bool on_unsubscribe(const std::string_view &topic, UnsubscribeRequest &cb);
+    bool on_unsubscribe(const std::string_view &topic, UnsubscribeRequest &&cb);
+
 
     ///Sets method list
     /**
@@ -236,32 +237,66 @@ public:
      */
     kjson::Object get_variables() const;
 
-    ///Registers binary content
-    /**
-     * When node receives binary content, calculates a hash and finds
-     * registered callback. If the callback is not registered,
-     * the node rejects the content
-     *
-     *
-     * @param hash hash of the content
-     * @param event a callback function
-     *
-     * @node remote node must calculate hash, and include this
-     * hash to a request. Once request is send, it can send
-     * the binary content as well (without waiting to response).
-     *
-     * The local node receives request and registers the hash. It
-     * must be done synchronously. Then it can wait for
-     * the binary content and after it is received, the request can
-     * be finished and send response to the remote node
-     */
-    void expect_binary(const std::string_view &hash, BinaryContentEvent &&event);
-
     void set_hwm(std::size_t sz);
 
     std::size_t get_hwm() const;
 
     static std::size_t default_hwm;
+
+
+    ///Use to send binary message
+    /**
+     * If you need to send a binary message and give the peer the ID of that
+     * message, you need to create instance of this class.
+     *
+     * Then you can call get_id() to receive ID of the message. When your
+     * text message is send to the peer, you can call send() to send actual
+     * binary message
+     *
+     */
+    class BinaryMessage {
+    public:
+
+        ///Construct uninitialized instance
+        BinaryMessage() = default;
+        ///Construct and initialize instance ready to receive the binary message to send to the specified peer
+        /**
+         * @param peer peer
+         */
+        BinaryMessage(const PPeer &peer);
+
+        BinaryMessage(const PWkPeer &peer);
+
+        ///You can move the object
+        BinaryMessage(BinaryMessage &&other);
+        ///You can assign the object
+        BinaryMessage &operator=(BinaryMessage &&other);
+
+        BinaryMessage(const BinaryMessage &other) = delete;
+        BinaryMessage operator=(const BinaryMessage &other) = delete;
+        ~BinaryMessage();
+
+        ///Retrieves ID
+        std::size_t get_id() const;
+
+        ///Send the message (you can call it only once)
+        void send(const std::string_view &data);
+        ///Send the message (you can call it only once)
+        void send(std::string &&data);
+
+    protected:
+        PWkPeer _peer;
+        std::size_t _id = 0;
+    };
+
+
+
+    void binary_receive(std::size_t id, BinaryContentEvent &&callback);
+
+
+    ///Determines, whether stream is still connected
+    bool is_connected() const;
+
 
 protected:
 
@@ -285,18 +320,6 @@ protected:
 
     ///Parse message from connection
     void parse_message(const MessageRef &msg);
-
-    ///Perform RPC
-    /**
-     * @param id arbitrary request id (should be unique)
-     * @param method method to call
-     * @param args arguments
-     *
-     * @note result arrives through on_result, on_exception, on_unknown_method
-     */
-    void send_call(const std::string_view &id,
-            const std::string_view &method,
-            const kjson::Value &args);
 
     ///Sends topic update
     /**
@@ -377,18 +400,15 @@ protected:
     void send_var_set(const std::string_view &variable, const kjson::Value &data);
 
 
-    ///stop receiving messages, call this in destructor
-    /**
-     * It is not error to call this multiple times, just first call stops the
-     * processing and other will do nothing.
-     */
-    void stop();
-
     void set_encoding(kjson::OutputType ot);
 
     kjson::OutputType get_encoding() const;
 
     static const char *error_to_string(NodeError err);
+
+
+
+
 
 
 protected:
@@ -398,19 +418,21 @@ protected:
 
     static std::string_view version;
 
-
     using Topics = std::map<std::string, UnsubscribeRequest, std::less<> >;
     using Subscriptions = std::map<std::string, TopicUpdateCallback, std::less<> >;
-    using HashMap = std::multimap<std::string, BinaryContentEvent, std::less<> >;
     using CallMap = std::map<std::string, ResponseCallback, std::less<> >;
     using VarMap = std::map<std::string, kjson::Value, std::less<> >;
+    using BinaryReservation = std::deque<std::optional<std::string> >;
+    using BinaryCallbacks = std::map<std::size_t, BinaryContentEvent>;
 
 
     PMethodList _methods;
     Topics _topic_map;
     Subscriptions _subscr_map;
     CallMap _call_map;
-    HashMap _hash_map;
+    BinaryReservation _bin_res;
+    BinaryCallbacks _bin_cbs;
+
     HelloRequest _hello_cb;
     WelcomeResponse _welcome_cb;
     DisconnectEvent _discnt_cb;
@@ -420,6 +442,8 @@ protected:
 
     mutable std::shared_timed_mutex _lock;
     unsigned int _call_id = 0;
+    std::size_t _send_bin_order = 0;
+    std::size_t _rcv_bin_order = 0;
 
 
     void finish_call(const std::string_view &id,
@@ -435,9 +459,16 @@ protected:
 
     void send_node_error(NodeError error);
 
+    std::size_t binary_reserve_id();
 
+    void binary_send(std::size_t id, const std::string_view &data);
+
+    void binary_send(std::size_t id, std::string &&data);
+
+    void binary_flush();
 
 };
+
 }
 
 
