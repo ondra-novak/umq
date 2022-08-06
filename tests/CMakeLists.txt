@@ -1,3 +1,5 @@
-add_executable(test main.cpp)
-target_link_libraries(test LINK_PUBLIC umq userver pthread)
+add_executable(fast_write_test fast_write_test.cpp)
+target_link_libraries(fast_write_test LINK_PUBLIC umq userver pthread)
 
+add_executable(wsserver_test wsserver_test.cpp)
+target_link_libraries(wsserver_test LINK_PUBLIC umq userver pthread)

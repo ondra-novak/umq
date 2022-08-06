@@ -27,7 +27,7 @@ void read_cycle(userver::Stream &s) {
 
 int main(int argv, char **argc) {
     auto addr = userver::NetAddr::fromString("localhost", "10000");
-    auto provider = userver::createAsyncProvider({1,6,false,true});
+    auto provider = userver::createAsyncProvider({1,6});
     userver::setCurrentAsyncProvider(provider);
 
     bool exit_cycle = false;
