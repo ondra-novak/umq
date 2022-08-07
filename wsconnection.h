@@ -38,6 +38,7 @@ protected:
 	userver::WebSocketParser _wsp;
 	userver::WebSocketSerializer _wss;
 	userver::WebSocketSerializer _wss_from_listener;
+	std::vector<Callback<void(bool)> > _flush_cbs;
 
 	AbstractConnectionListener * _listener;
 

@@ -12,8 +12,6 @@ add_compile_options(-Wall -Wno-noexcept-type)
 add_library (umq
 				 peer.cpp
 				 publisher.cpp
-				 wsconnection.cpp
-				 tcpconnection.cpp
 			     request.cpp)
 
 add_subdirectory (tests)

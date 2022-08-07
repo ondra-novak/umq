@@ -35,8 +35,9 @@ int main(int argv, char **argc) {
 
     connect(addr) >> [&](std::optional<userver::Stream> &&stream) {
 
+
         if (stream.has_value()) {
-           userver::Stream s(std::move(*stream));
+            auto s = userver::createBufferedStream(std::move(*stream));
            std::string t;
            std::size_t n = 0;
 
@@ -45,7 +46,7 @@ int main(int argv, char **argc) {
            while (!exit_cycle) {
                 t = std::to_string(n);
                 t.append("\n");
-                s.write(t, true) >> [&](bool x){
+                s.write(t) >> [&](bool x){
                     if (x == false)
                         exit_cycle = true;
                 };
