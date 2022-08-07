@@ -9,31 +9,64 @@ std::string_view page = R"html(<!DOCTYPE html>
 <title>WebSocket test</title>
 </head>
 <body>
+<div id="area">
+</div>
+<div>
+Type text (Enter): <input type="text" id="text"> 
+</div>
+<script type="text/javascript">
+var loc = window.location, new_uri;
+if (loc.protocol === "https:") {
+    new_uri = "wss:";
+} else {
+    new_uri = "ws:";
+}
+new_uri += "//" + loc.host;
+new_uri += loc.pathname + "./ws";
+let ws = new WebSocket(new_uri);
+ws.onmessage = m => {
+    var el = document.createElement("P");
+    el.innerText = m.data;
+    document.getElementById("area").appendChild(el);
+}
+
+document.getElementById("text").addEventListener("keypress",ev=>{
+   if (ev.key == "Enter") {
+        ws.send(ev.target.value);
+        ev.target.value = "";        
+    } 
+});
+
+</script>
+
 </body>
 </html>
 )html";
 
 
-void ws_example(WSStream &stream) {
-    //create as unique ptr
-    auto sptr = std::make_unique<WSStream>(std::move(stream));
 
-    //we transfer sptr, but also move stream pointer.
-    //This pointer stays valid even if sptr is moved somewhere else
-    //note that pointer stays valid until the loop is exited
-    sptr->recv_async_loop([stream = sptr.get(), sptr = std::move(sptr)](const WSStream::Message &msg) mutable {
+std::vector<WeakWSStreamRef> _publisher;
+std::mutex lock;
 
-        if (msg.type == WSFrameType::text) {
-            stream->send_text(msg.data);
-        } else if (msg.type == WSFrameType::connClose) {
-            stream->flush_async([sptr = std::move(sptr)](bool ok) {
-                //empty, sptr will be released
-            });
-            return false;
+void publish_text(const std::string_view &text) {
+    std::lock_guard _(lock);
+    auto iter = std::remove_if(_publisher.begin(), _publisher.end(),
+           [&](const WeakWSStreamRef &ref) {
+        SharedWSStream s;
+        if (ref.lock(s)) {
+            return !s.send_text(text);
+        }else{
+            return true;
         }
-        return true;
     });
+    _publisher.erase(iter, _publisher.end());
 }
+
+void publish_add(const SharedWSStream &s) {
+    std::lock_guard _(lock);
+    _publisher.push_back(s);
+}
+
 
 int main(int argc, char **argv) {
 
@@ -47,7 +80,14 @@ int main(int argc, char **argv) {
     });
 
     server.addPath("/ws", WebsocketServerHandler([](WSStream &stream){
-       ws_example(stream);
+        auto s = stream.make_shared();
+        publish_add(s);
+        s.recv_loop() >> [s](const WSStream::Message &msg) mutable {
+            if (msg.type == WSFrameType::text) {
+                publish_text(msg.data);
+            }
+            return true;
+        };
     }));
     server.start(addrs, createAsyncProvider({1,4}));
     server.stopOnSignal();
