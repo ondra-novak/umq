@@ -4,7 +4,7 @@
 namespace umq {
 
 Request::Request(const PWkPeer &node, const std::string_view &id,
-		const std::string_view &method_name, const kjson::Value &args)
+		const std::string_view &method_name, const std::string_view &args)
 :_node(node)
 ,_id(id)
 ,_method_name(method_name)
@@ -16,7 +16,7 @@ Request::~Request() {
 	if (!_response_sent) set_no_result();
 }
 
-void Request::set_result(const kjson::Value &val) {
+void Request::set_result(const std::string_view &val) {
 	if (_response_sent) return;
 	PPeer nd = _node.lock();
 	if (nd != nullptr) {
@@ -25,7 +25,7 @@ void Request::set_result(const kjson::Value &val) {
 	_response_sent = true;
 }
 
-void Request::set_exception(const kjson::Value &val) {
+void Request::set_exception(const std::string_view &val) {
 	if (_response_sent) return;
 	PPeer nd = _node.lock();
 	if (nd != nullptr) {
@@ -35,19 +35,10 @@ void Request::set_exception(const kjson::Value &val) {
 }
 
 void Request::set_exception(int code, const std::string_view &message) {
-	set_exception(kjson::Value{
-		{"code",code},
-		{"message",message}
-	});
-}
-
-void Request::set_exception(int code, const std::string_view &message,
-		const kjson::Value &data) {
-	set_exception(kjson::Value{
-		{"code",code},
-		{"message",message},
-		{"data",data}
-	});
+    auto msg = std::to_string(code);
+    msg.push_back(' ');
+    msg.append(message);
+	set_exception(msg);
 }
 
 void Request::signal_unknown_call(const std::string_view &reason) {
@@ -73,15 +64,7 @@ void Request::set_no_result() {
 	set_result(nullptr);
 }
 
-kjson::Value Request::operator [](std::size_t idx) const {
-	return _args[idx];
-}
-
-kjson::Value Request::operator [](std::string_view idx) const {
-	return _args[idx];
-}
-
-kjson::Value Request::get_args() const {
+const std::string &Request::get_data() const {
 	return _args;
 }
 

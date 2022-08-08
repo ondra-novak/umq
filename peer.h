@@ -7,18 +7,18 @@
 
 #ifndef LIB_UMQ_NODE_H_32130djwoeijd08923jdeioew
 #define LIB_UMQ_NODE_H_32130djwoeijd08923jdeioew
+
 #include "peer.h"
-
-
+#include "message.h"
+#include "connection.h"
 #include "methodlist.h"
 #include <shared/callback.h>
 #include <deque>
 #include <map>
 #include <memory>
 #include <shared_mutex>
+#include <any>
 
-#include "message.h"
-#include "connection.h"
 namespace umq {
 
 enum class NodeError {
@@ -53,15 +53,19 @@ enum class HighWaterMarkBehavior{
 
 
 ///Called on server when hello request arrived, can return response. From this point, node is ready
-using HelloRequest = ondra_shared::Callback<kjson::Value(const kjson::Value)>;
+using HelloRequest = ondra_shared::Callback<std::string(const std::string_view)>;
 ///Called in client when welcome request arrived. From this point, node is ready
-using WelcomeResponse = ondra_shared::Callback<void(const kjson::Value)>;
+using WelcomeResponse = ondra_shared::Callback<void(const std::string_view)>;
 ///Called to unsubscribe topic by subscriber
 using UnsubscribeRequest = ondra_shared::Callback<void()>;
 ///called when node disconnects, before it is destroyed
 using DisconnectEvent = ondra_shared::Callback<void()>;
 
 using BinaryContentEvent = ondra_shared::Callback<void(bool valid, const std::string_view &content)>;
+
+using SharedVariables = std::map<std::string, std::string, std::less<> >;
+
+using PeerVariables = std::map<std::string, std::any>;
 
 class Peer: protected AbstractConnectionListener, public std::enable_shared_from_this<Peer> {
 public:
@@ -114,7 +118,7 @@ public:
      *
      * You can start use the node after Welcome arrives, never soon.
      */
-    void init_client(PConnection &&conn,const kjson::Value &req,  WelcomeResponse &&resp);
+    void init_client(PConnection &&conn,const std::string_view &req,  WelcomeResponse &&resp);
 
     ///Perform RPC call
     /**
@@ -123,7 +127,7 @@ public:
      * @param params parameters
      * @param result callback which handles result
      */
-    void call(const std::string_view &method, const kjson::Value &params, ResponseCallback &&result);
+    void call(const std::string_view &method, const std::string_view &params, ResponseCallback &&result);
 
     ///Subscribes given topic
     /** Doesn't perform actual subscription, it only prepares
@@ -199,12 +203,12 @@ public:
      * Only peer can change the variable
      *
      * @param name name of the variable
-     * @return Value of the variable, returns undefined if not set
+     * @return Value of the variable, if not exists, value is not set
      */
-    kjson::Value get_peer_variable(const std::string_view &name) const;
+    std::optional<std::string_view> get_peer_variable(const std::string_view &name) const;
 
     ///Get all peer variables
-    kjson::Object get_peer_variables() const;
+    SharedVariables get_peer_variables() const;
 
     ///Sets the variable
     /**
@@ -214,13 +218,17 @@ public:
      * @param name name of the variable
      * @param value content of variable
      */
-    void set_variable(const std::string_view &name, const kjson::Value &value);
+    void set_variable(const std::string_view &name, const std::string_view &value);
+
+    ///Unsets the variable
+    bool unset_variable(const std::string_view &name);
 
     ///Sets multiple variables
     /**
      * @param variables json-object contains multiple variables
+     * @param merge if true, current variables stays set, otherwise they are cleared
      */
-    void set_variables(const kjson::Object &variables);
+    void set_variables(SharedVariables &&variables, bool merge = false);
 
     ///Retrieves variable
     /**
@@ -229,13 +237,20 @@ public:
      * @param name name of variable
      * @return value content of variable
      */
-    kjson::Value get_variable(const std::string_view &name) const;
+    std::optional<std::string_view> get_variable(const std::string_view &name) const;
 
     ///Retrieves all variables as single json-object
     /**
      * @return value content of variable
      */
-    kjson::Object get_variables() const;
+    SharedVariables get_variables() const;
+
+    void set_local_variable(const std::string_view &name, const std::any &value);
+
+    std::optional<std::any> get_local_variable(const std::string_view &name);
+
+    PeerVariables get_local_variables();
+
 
     void set_hwm(std::size_t sz);
 
@@ -301,21 +316,23 @@ public:
 protected:
 
     friend class Request;
-	void on_result(const std::string_view &id, const kjson::Value &data);
-	void on_welcome(const std::string_view &version, const kjson::Value &data);
-	void on_exception(const std::string_view &id, const kjson::Value &data);
+	void on_result(const std::string_view &id, const std::string_view &data);
+	void on_welcome(const std::string_view &version, const std::string_view &data);
+	void on_exception(const std::string_view &id, const std::string_view &data);
 	void on_topic_close(const std::string_view &topic_id);
-	kjson::Value on_hello(const std::string_view &version,
-			const kjson::Value &data);
+	std::string on_hello(const std::string_view &version, const std::string_view &data);
 	void on_unsubscribe(const std::string_view &topic_id);
 	bool on_topic_update(const std::string_view &topic_id,
-			const kjson::Value &data);
+			const std::string_view &data);
 	bool on_call(const std::string_view &id, const std::string_view &method,
-			const kjson::Value &args);
+			const std::string_view &args);
 	void on_unknown_method(const std::string_view &id, const std::string_view &method_name);
 	bool on_binary_message(const umq::MessageRef &msg);
-	void on_set_var(const std::string_view &variable, const kjson::Value &data);
+	void on_set_var(const std::string_view &variable, const std::string_view &data);
+	void on_unset_var(const std::string_view &variable);
     void on_disconnect() override;
+    void on_request_continue(const std::string_view &id, const std::string_view &data);
+    void on_request_info(const std::string_view &id, const std::string_view &data);
 
 
     ///Parse message from connection
@@ -331,7 +348,7 @@ protected:
      * @note default implementation always returns true. Extending class can implement own logic
      *
      */
-    bool send_topic_update(const std::string_view &topic_id, const kjson::Value &data, HighWaterMarkBehavior hwmb, std::size_t hwm_size );
+    bool send_topic_update(const std::string_view &topic_id, const std::string_view &data, HighWaterMarkBehavior hwmb, std::size_t hwm_size );
 
     ///Close the topic
     /**
@@ -354,16 +371,18 @@ protected:
      *
      *
      */
-    void send_result(const std::string_view &id, const kjson::Value &data);
+    void send_result(const std::string_view &id, const std::string_view &data);
 
     ///Sends exception of RPC call
     /**
      * @param id id of request
      * @param data data of request
      */
-    void send_exception(const std::string_view &id, const kjson::Value &data);
+    void send_exception(const std::string_view &id, const std::string_view &data);
 
     void send_exception(const std::string_view &id, int code, const std::string_view &message);
+
+    void send_exception(const std::string_view &id, NodeError code, const std::string_view &message);
 
     ///Sends about unknown method
     /**
@@ -377,32 +396,26 @@ protected:
      * @param version version (1.0,0)
      * @param data arbitrary data
      */
-    void send_welcome(const std::string_view &version, const kjson::Value &data);
+    void send_welcome(const std::string_view &version, const std::string_view &data);
 
     ///Sends hello
     /**
      * @param version version (1.0,0)
      * @param data arbitrary data
      */
-    void send_hello(const std::string_view &version, const kjson::Value &data);
-
-    ///Sends hello with default version
-    /**
-     * @param data arbitrary data
-     */
-    void send_hello( const kjson::Value &data);
+    void send_hello(const std::string_view &version, const std::string_view &data);
 
     ///Sets remote variable
     /**
      * @param variable variable
      * @param data data of variable - use 'undefined' to unset variable
      */
-    void send_var_set(const std::string_view &variable, const kjson::Value &data);
+    void send_var_set(const std::string_view &variable, const std::string_view &data);
 
 
-    void set_encoding(kjson::OutputType ot);
+    void send_var_unset(const std::string_view &variable);
 
-    kjson::OutputType get_encoding() const;
+
 
     static const char *error_to_string(NodeError err);
 
@@ -414,14 +427,12 @@ protected:
 protected:
 
     std::unique_ptr<AbstractConnection> _conn;
-    kjson::OutputType _enc;
 
     static std::string_view version;
 
     using Topics = std::map<std::string, UnsubscribeRequest, std::less<> >;
     using Subscriptions = std::map<std::string, TopicUpdateCallback, std::less<> >;
     using CallMap = std::map<std::string, ResponseCallback, std::less<> >;
-    using VarMap = std::map<std::string, kjson::Value, std::less<> >;
     using BinaryReservation = std::deque<std::optional<std::string> >;
     using BinaryCallbacks = std::map<std::size_t, BinaryContentEvent>;
 
@@ -436,8 +447,8 @@ protected:
     HelloRequest _hello_cb;
     WelcomeResponse _welcome_cb;
     DisconnectEvent _discnt_cb;
-    VarMap _var_map;
-    VarMap _local_var_map;
+    SharedVariables _var_map;
+    SharedVariables _local_var_map;
     std::size_t _hwm;
 
     mutable std::shared_timed_mutex _lock;
@@ -448,13 +459,16 @@ protected:
 
     void finish_call(const std::string_view &id,
     				Response::ResponseType type,
-					const kjson::Value &data);
+					const std::string_view &data);
 
     static std::string calc_hash(const std::string_view &bin_content);
 
+    void prepareMessage(Message &msg, char type, std::string_view &topic, const std::initializer_list<std::string_view> &data);
+
+
     static std::string prepareHdr(char type, const std::string_view &id);
     Message prepareMessage(char type, std::string_view id, kjson::Array data);
-    Message prepareMessage1(char type, std::string_view id, kjson::Value data);
+    Message prepareMessage1(char type, std::string_view id, std::string_view data);
     Message prepareMessage(char type, std::string_view id);
 
     void send_node_error(NodeError error);
@@ -466,6 +480,11 @@ protected:
     void binary_send(std::size_t id, std::string &&data);
 
     void binary_flush();
+
+    class PreparedMessage: public Message {
+    public:
+        PreparedMessage(char type, const std::string_view &topic, const std::initializer_list<std::string_view> &data);
+    };
 
 };
 

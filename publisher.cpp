@@ -23,7 +23,7 @@ void Publisher::unsubscribe(std::size_t id) {
 	if (!_inp) do_unsubscribe();
 }
 
-bool Publisher::publish(const kjson::Value &v) {
+bool Publisher::publish(const std::string_view &v) {
 	std::unique_lock _(_mx);
 	_inp = true;
 	for (const auto &x: _subs) {

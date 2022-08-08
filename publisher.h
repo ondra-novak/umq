@@ -37,7 +37,7 @@ public:
 	 * @retval true published
 	 * @retval false no subscribers
 	 */
-	bool publish(const kjson::Value &v);
+	bool publish(const std::string_view &v);
 
 
 	///Create unsubscribe request for given ID

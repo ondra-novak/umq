@@ -3,9 +3,9 @@
 
 #include "request.h"
 
-#include <kissjson/value.h>
 #include <shared/callback.h>
 #include <shared/shared_lockable_ptr.h>
+#include <unordered_map>
 
 namespace umq {
 

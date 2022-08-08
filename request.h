@@ -1,6 +1,5 @@
 #ifndef LIB_UMQ_REQUEST_H_qwpodj023jd9d928dw
 #define LIB_UMQ_REQUEST_H_qwpodj023jd9d928dw
-#include <kissjson/value.h>
 #include <memory>
 #include <string_view>
 #include <shared/callback.h>
@@ -18,7 +17,7 @@ using PWkPeer = std::weak_ptr<Peer>;
  * @retval true continue receive topic
  * @retval false stop receive topic (unsubscribe)
  */
-using TopicUpdateCallback = ondra_shared::Callback<bool(kjson::Value data)>;
+using TopicUpdateCallback = ondra_shared::Callback<bool(const std::string_view &data)>;
 
 using BinaryTopicUpdateCallback = ondra_shared::Callback<bool(const std::string_view &data)>;
 
@@ -28,7 +27,7 @@ public:
 	Request(const PWkPeer &node,
 			const std::string_view &id,
 			const std::string_view &method_name,
-			const kjson::Value &args);
+			const std::string_view &data);
 
 	~Request();
 
@@ -36,16 +35,13 @@ public:
 	Request (Request &&req);
 	Request &operator=(const Request &req) = delete;
 
-	void set_result(const kjson::Value &val);
-	void set_exception(const kjson::Value &val);
+	void set_result(const std::string_view &val);
+	void set_exception(const std::string_view &val);
 	void set_exception(int code, const std::string_view &message);
-	void set_exception(int code, const std::string_view &message, const kjson::Value &data);
 	void signal_unknown_call(const std::string_view &reason);
 	void set_no_result();
 
-	kjson::Value operator[](std::size_t idx) const;
-	kjson::Value operator[](std::string_view idx) const;
-	kjson::Value get_args() const;
+	const std::string &get_data() const;
 
 
 protected:
@@ -57,7 +53,7 @@ protected:
     ///contains name of method
     std::string _method_name;
     ///Contains arguments
-    kjson::Value _args;
+    std::string _args;
     ///
     bool _response_sent;
 };
@@ -77,25 +73,22 @@ public:
 	    disconnected
 	};
 
-	Response(ResponseType type, kjson::Value data)
+	Response(ResponseType type, const std::string_view &data)
 		:d(data),t(type) {}
 
-	kjson::Value get_result() const {
-		if (t == ResponseType::result) return d; else return kjson::Value();
+
+	const std::string &get_data() const {
+	    return d;
 	}
-	kjson::Value get_exception() const{
-		if (t == ResponseType::exception) return d; else return kjson::Value();
-	}
-	std::string_view get_execute_error() const{
-		if (t == ResponseType::execute_error) return d.get_string(); else return std::string_view();
-	}
+
+
 
 	bool has_result() const {return t == ResponseType::result;}
 	bool has_exception() const {return t == ResponseType::exception;}
 	bool has_execute_error() const {return t == ResponseType::execute_error;}
 	bool has_disconnected() const {return t == ResponseType::disconnected;}
 protected:
-	kjson::Value d;
+	std::string d;
 	ResponseType t;
 };
 

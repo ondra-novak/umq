@@ -1,6 +1,6 @@
 #include "peer.h"
 
-#include <kissjson/parser.h>
+#include <shared/trailer.h>
 namespace umq {
 
 std::size_t Peer::default_hwm = 16384;
@@ -13,7 +13,7 @@ void Peer::init_server(PConnection &&conn, HelloRequest &&resp) {
 	_conn->start_listen(this);
 }
 
-void Peer::init_client(PConnection &&conn, const kjson::Value &req,
+void Peer::init_client(PConnection &&conn, const std::string_view &req,
 		WelcomeResponse &&resp) {
 	_welcome_cb = std::move(resp);
 	_conn = std::move(conn);
@@ -21,18 +21,18 @@ void Peer::init_client(PConnection &&conn, const kjson::Value &req,
 	Peer::send_hello(req);
 }
 
-void Peer::call(const std::string_view &method, const kjson::Value &params,
+void Peer::call(const std::string_view &method, const std::string_view &params,
 		ResponseCallback &&result) {
 
 	std::unique_lock _(_lock);
 	if (!is_connected()) {
-	    result(Response(Response::ResponseType::disconnected, kjson::Value()));
+	    result(Response(Response::ResponseType::disconnected, std::string_view()));
         return;
 	}
 	int id = _call_id++;
 	std::string idstr = std::to_string(id);
 	_call_map[idstr] = std::move(result);
-    _conn->send_message(prepareMessage('C', idstr, {method, params}));
+    _conn->send_message(PreparedMessage('C', idstr, {method, params}));
 }
 
 void Peer::subscribe(const std::string_view &topic, TopicUpdateCallback &&cb) {
@@ -50,33 +50,32 @@ TopicUpdateCallback Peer::start_publish(const std::string_view &topic, HighWater
         std::string t(topic);
         _topic_map.emplace(t, nullptr);
 
-        return [=, me = weak_from_this()](const kjson::Value &data)mutable->bool {
+        auto trailer = ondra_shared::trailer([=,me = weak_from_this()]{
             auto melk = me.lock();
             if (melk != nullptr) {
-                if (data.defined()) {
-                    std::shared_lock _(melk->_lock);
-                    auto iter = melk->_topic_map.find(t);
-                    if (iter != melk->_topic_map.end()) {
-                        return melk->send_topic_update(topic, data, hwmb, hwm_size);
-                    } else{
-                        return false;
-                    }
-                } else {
-                    std::unique_lock _(melk->_lock);
-                    auto iter = melk->_topic_map.find(t);
-                    if (iter != melk->_topic_map.end()) {
-                        melk->send_topic_close(t);
-                        return true;
-                    } else {
-                        return false;
-                    }
+                std::unique_lock _(melk->_lock);
+                auto iter = melk->_topic_map.find(t);
+                if (iter != melk->_topic_map.end()) {
+                    melk->send_topic_close(t);
+                }
+            }
+        });
+        return [=, trailer = std::move(t), me = weak_from_this()](const std::string_view &data)mutable->bool {
+            auto melk = me.lock();
+            if (melk != nullptr) {
+                std::shared_lock _(melk->_lock);
+                auto iter = melk->_topic_map.find(t);
+                if (iter != melk->_topic_map.end()) {
+                    return melk->send_topic_update(topic, data, hwmb, hwm_size);
+                } else{
+                    return false;
                 }
             } else {
                 return false;
             }
         };
 	} else {
-	    return [](const kjson::Value &) {
+	    return [](const std::string_view &) {
 	        return false;
 	    };
 	}
@@ -114,26 +113,25 @@ void Peer::on_disconnect(DisconnectEvent &&disconnect) {
 }
 
 
-void Peer::on_result(const std::string_view &id, const kjson::Value &data) {
+void Peer::on_result(const std::string_view &id, const std::string_view &data) {
 	finish_call(id, Response::ResponseType::result, data);
 }
 
-void Peer::on_welcome(const std::string_view &version, const kjson::Value &data) {
+void Peer::on_welcome(const std::string_view &version, const std::string_view&data) {
 	if (_welcome_cb != nullptr) _welcome_cb(data);
 }
 
-void Peer::on_exception(const std::string_view &id, const kjson::Value &data) {
-	finish_call(id, Response::ResponseType::result, data);
+void Peer::on_exception(const std::string_view &id, const std::string_view &data) {
+	finish_call(id, Response::ResponseType::exception, data);
 }
 
 void Peer::on_topic_close(const std::string_view &topic_id) {
-	on_topic_update(topic_id, kjson::Value());
 	unsubscribe(topic_id);
 }
 
-kjson::Value Peer::on_hello(const std::string_view &version, const kjson::Value &data) {
+std::string Peer::on_hello(const std::string_view &version, const std::string_view &data) {
 	if (_hello_cb != nullptr) return _hello_cb(data);
-	else return nullptr;
+	else return std::string();
 }
 
 void Peer::on_unsubscribe(const std::string_view &topic_id) {
@@ -147,7 +145,7 @@ void Peer::on_unsubscribe(const std::string_view &topic_id) {
 	}
 }
 
-bool Peer::on_topic_update(const std::string_view &topic_id, const kjson::Value &data) {
+bool Peer::on_topic_update(const std::string_view &topic_id, const std::string_view &data) {
 	std::shared_lock _(_lock);
 	auto iter = _subscr_map.find(topic_id);
 	if (iter != _subscr_map.end()) {
@@ -162,7 +160,7 @@ bool Peer::on_topic_update(const std::string_view &topic_id, const kjson::Value 
 }
 
 bool Peer::on_call(const std::string_view &id, const std::string_view &method,
-		const kjson::Value &args) {
+		const std::string_view &args) {
 	auto mlk = _methods.lock_shared();
 	std::string strm(method);
 	auto iter = mlk->find(strm);
@@ -195,18 +193,19 @@ bool Peer::on_binary_message(const MessageRef &msg) {
 	}
 }
 
-void Peer::on_set_var(const std::string_view &variable, const kjson::Value &data) {
+void Peer::on_unset_var(const std::string_view &variable) {
+    std::unique_lock _(_lock);
+    auto iter = _var_map.find(variable);
+    if (iter != _var_map.end()) _var_map.erase(iter);
+}
+
+void Peer::on_set_var(const std::string_view &variable, const std::string_view &data) {
 	std::unique_lock _(_lock);
-	if (data.defined()) {
-		_var_map[std::string(variable)] = data;
-	} else {
-		auto iter = _var_map.find(variable);
-		if (iter != _var_map.end()) _var_map.erase(iter);
-	}
+	_var_map[std::string(variable)] = data;
 }
 
 void Peer::finish_call(const std::string_view &id, Response::ResponseType type,
-		const kjson::Value &data) {
+		const std::string_view &data) {
 	std::unique_lock _(_lock);
 	auto iter = _call_map.find(std::string(id));
 	if (iter != _call_map.end()) {
@@ -217,15 +216,26 @@ void Peer::finish_call(const std::string_view &id, Response::ResponseType type,
 	}
 }
 
-kjson::Value Peer::get_peer_variable(const std::string_view &name) const {
+std::optional<std::string_view> Peer::get_peer_variable(const std::string_view &name) const {
 	std::shared_lock _(_lock);
 	auto iter = _var_map.find(name);
-	if (iter != _var_map.end()) return iter->second;
-	else return kjson::Value();
+	if (iter != _var_map.end()) return std::string_view(iter->second);
+	else return {};
 }
 
-void Peer::set_variable(const std::string_view &name, const kjson::Value &value) {
+void Peer::set_variable(const std::string_view &name, const std::string_view &value) {
 	std::unique_lock _(_lock);
+	auto iter = _local_var_map.find(name);
+	if (iter == _local_var_map.end()) {
+	    _local_var_map.emplace(std::string(name), std::string(value));
+	    send_var_set(name, value);
+	} else {
+	    if (iter->second != value) {
+	        iter->second.clear();
+	        iter->second.append(value);
+	        send_var_set(name, value);
+	    }
+	}
 	auto insr = _local_var_map.emplace(std::string(name), value);
 	if (!insr.second) {
 		if (insr.first->second != value) {
@@ -237,34 +247,58 @@ void Peer::set_variable(const std::string_view &name, const kjson::Value &value)
 	}
 }
 
-void Peer::set_variables(const kjson::Object &variables) {
-	for (kjson::Value v : variables) {
-		set_variable(v.get_key(), v.strip_key());
-	}
+bool Peer::unset_variable(const std::string_view &name) {
+    std::unique_lock _(_lock);
+    auto iter = _local_var_map.find(name);
+    if (iter == _local_var_map.end()) return false;
+    _local_var_map.erase(iter);
+    send_var_unset(name);
+    return true;
+
+
 }
 
-kjson::Value Peer::get_variable(const std::string_view &name) const {
+void Peer::set_variables(SharedVariables &&list, bool merge) {
+    std::unique_lock _(_lock);
+    for (const auto &x: list) {
+        auto iter = _local_var_map.find(x.first);
+        if (iter == list.end() || iter->second != x.second) {
+            send_var_set(x.first, x.second);
+        }
+    }
+    if (merge) {
+        for (const auto &x: _local_var_map) {
+            list.emplace(x.first, x.second);
+        }
+    } else {
+        for (const auto &x: _local_var_map) {
+            auto iter = list.find(x.first);
+            if (iter == list.end()) {
+                send_var_unset(x.first);
+            }
+        }
+    }
+    std::swap(_local_var_map, list);
+}
+
+std::optional<std::string_view> Peer::get_variable(const std::string_view &name) const {
 	std::shared_lock _(_lock);
 	auto iter = _local_var_map.find(name);
 	if (iter != _local_var_map.end()) {
-		return iter->second;
+		return std::string_view(iter->second);
 	} else{
-		return kjson::Value();
+		return {};
 	}
 }
 
-kjson::Object Peer::get_variables() const {
+SharedVariables Peer::get_variables() const {
 	std::shared_lock _(_lock);
-	return kjson::Object(_local_var_map,[&](const auto &x){
-		return kjson::Value(x.first, x.second);
-	});
+	return _local_var_map;
 }
 
-kjson::Object Peer::get_peer_variables() const {
-	std::shared_lock _(_lock);
-	return kjson::Object(_var_map,[&](const auto &x){
-		return kjson::Value(x.first, x.second);
-	});
+SharedVariables Peer::get_peer_variables() const {
+    std::shared_lock _(_lock);
+    return _var_map;
 }
 
 void Peer::on_disconnect() {
@@ -288,7 +322,7 @@ void Peer::on_disconnect() {
         if (x.second!=nullptr) x.second();
     }
     for (const auto &x: clmp) {
-        if (x.second!=nullptr) x.second(Response(Response::ResponseType::disconnected, kjson::Value()));
+        if (x.second!=nullptr) x.second(Response(Response::ResponseType::disconnected, std::string_view()));
     }
     for (const auto &x: bcmp) {
         if (x.second!=nullptr) x.second(false, std::string_view());
@@ -325,100 +359,71 @@ void Peer::parse_message(const MessageRef &msg) {
             send_node_error(NodeError::unexpectedBinaryFrame);
         }
     } else {
-        try {
-            auto v = kjson::Value::from_string(msg.data);
-            if (v.is_array() && !v.empty()) {
-                auto t = v[0];
-                if (t.is_string()) {
-                    auto strt = t.get_string();
-                    kjson::Value v1, v2;
-                    if (!strt.empty())  {
-                        char flag = strt[0];
-                        auto id = strt.substr(1);
-                        try {
-                            switch (flag) {
-                                default:
-                                    send_node_error(NodeError::unknownMessageType);
-                                    break;
-                                case 'C': v1 = v[1];
-                                          v2 = v[2];
-                                          if (v1.is_string()) {
-                                              auto m = v1.get_string();
-                                              try {
-                                                  if (!on_call(id, m, v2)) {
-                                                      send_unknown_method(id, m);
-                                                  }
-                                              } catch (std::exception &e) {
-                                                  send_exception(id, static_cast<int>(NodeError::unhandledException),e.what());
-                                              }
-                                          } else {
-                                              send_node_error(NodeError::invalidMesssgeFormat_Call);
-                                          }
-                                          break;
-                                case 'R': v1 = v[1];
-                                          if (v1.defined()) {
-                                            on_result(id, v1);
-                                          } else {
-                                            send_node_error(NodeError::invalidMessageFormat_Result);
-                                          }
-                                          break;
-                                case 'E': v1 = v[1];
-                                          if (v1.defined()) {
-                                            on_exception(id, v1);
-                                          } else {
-                                            send_node_error(NodeError::invalidMessageFormat_Exception);
-                                          }
-                                          break;
-                                case '?': v1 = v[1];
-                                          if (v1.is_string()) {
-                                            on_unknown_method(id, v1.get_string());
-                                          } else {
-                                            send_node_error(NodeError::invalidMessageFormat_UnknownMethod);
-                                          }
-                                          break;
-                                case 'T': v1 = v[1];
-                                          if (v1.defined()) {
-                                            if (!on_topic_update(id, v[1])) {
-                                                    send_unsubscribe(id);
-                                            }
-                                          } else {
-                                              send_node_error(NodeError::invalidMessageFormat_TopicUpdate);
-                                          }
-                                          break;
-                                case 'U': on_unsubscribe(id);
-                                          break;
-                                case 'N': on_topic_close(id);
-                                          break;
-                                case 'S': on_set_var(id, v[1]);
-                                          break;
-                                case 'H': v1 = v[1];
-                                          v2 = v[2];
-                                          if (v1.get_string() != version) {
-                                              send_node_error(NodeError::unsupportedVersion);
-                                          } else {
-                                             v1 = on_hello(v1.get_string(), v2);
-                                             send_welcome(version, v1);
-                                          }
-                                          break;
-                                case 'W': v1 = v[1];
-                                          v2 = v[2];
-                                          if (v1.get_string() != version) {
-                                              send_node_error(NodeError::unsupportedVersion);
-                                          } else {
-                                              on_welcome(v1.get_string(), v2);
-                                          }
-                                          break;
-                                }
-                        } catch (const std::exception &e) {
-                            send_node_error(NodeError::messageProcessingError);
-                        }
-                    }
+        std::string_view data = msg.data;
+        std::string_view topic = userver::splitAt("\n", data);
+        std::string_view name;
+        if (!topic.empty()) {
+            char mt = topic[0];
+            std::string_view id = topic.substr(1);
+            try {
+                switch (mt) {
+                    default:
+                        send_node_error(NodeError::unknownMessageType);;
+                        break;
+                    case 'C': name = userver::splitAt("\n", data);
+                              try {
+                                  if (!on_call(id, name, data)) {
+                                      send_unknown_method(id, name);
+                                  }
+                              } catch (const std::exception &e) {
+                                  send_exception(id, NodeError::unhandledException, e.what());
+                              }
+                              break;
+                    case 'P': try {
+                                  on_request_continue(id, data);
+                              } catch (const std::exception &e) {
+                                  send_exception(id, NodeError::unhandledException, e.what());
+                              }
+                              break;
+                    case 'I': try {
+                                  on_request_info(id, data);
+                              } catch (...) {
+                                  //TODO: use global information channel?
+                              }
+                              break;
+                    case 'R': on_result(id, data);
+                              break;
+                    case 'E': on_exception(id, data);
+                              break;
+                    case '?': on_unknown_method(id, data);
+                              break;
+                    case 'T': if (!on_topic_update(id, data)) send_unsubscribe(id);
+                              break;
+                    case 'U': on_unsubscribe(id);
+                              break;
+                    case 'N': on_topic_close(id);
+                              break;
+                    case 'S': on_set_var(id, data);
+                              break;
+                    case 'X': on_unset_var(id);
+                              break;
+                    case 'H': if (id != version) {
+                                    send_node_error(NodeError::unsupportedVersion);
+                              } else {
+                                  send_welcome(version, on_hello(id, data));
+                              }
+                              break;
+                    case 'W': if (id != version) {
+                                  send_node_error(NodeError::unsupportedVersion);
+                              } else {
+                                  on_welcome(id, data);
+                              }
+                              break;
                 }
+            } catch (const std::exception &e) {
+                send_node_error(NodeError::messageProcessingError);
             }
-
-            send_node_error(NodeError::invalidMessageFormat);
-
-        } catch (const kjson::ParseError &err) {
+        } else {
             send_node_error(NodeError::messageParseError);
         }
     }
@@ -426,7 +431,7 @@ void Peer::parse_message(const MessageRef &msg) {
 
 
 
-bool Peer::send_topic_update(const std::string_view &topic_id, const kjson::Value &data, HighWaterMarkBehavior hwmb, std::size_t hwm_size) {
+bool Peer::send_topic_update(const std::string_view &topic_id, const std::string_view &data, HighWaterMarkBehavior hwmb, std::size_t hwm_size) {
     if (!_conn) return false;
     if (_conn->is_hwm(hwm_size)) {
         switch(hwmb) {
@@ -437,39 +442,36 @@ bool Peer::send_topic_update(const std::string_view &topic_id, const kjson::Valu
         case HighWaterMarkBehavior::unsubscribe: send_topic_close(topic_id);return false;
         }
     }
-    _conn->send_message(prepareMessage1('T', topic_id, data));
+    _conn->send_message(PreparedMessage('T', topic_id, {data}));
     return true;
 }
 
 void Peer::send_topic_close(const std::string_view &topic_id) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage('N', topic_id));
+    _conn->send_message(PreparedMessage('N', topic_id, {}));
 }
 
 void Peer::send_unsubscribe(const std::string_view &topic_id) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage('U', topic_id));
+    _conn->send_message(PreparedMessage('U', topic_id, {}));
 }
 
-void Peer::send_result(const std::string_view &id,
-        const kjson::Value &data) {
+void Peer::send_result(const std::string_view &id, const std::string_view &data) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage1('R', id, data));
+    _conn->send_message(PreparedMessage('R', id, {data}));
 }
 
-void Peer::send_exception(const std::string_view &id,
-        const kjson::Value &data) {
+void Peer::send_exception(const std::string_view &id, const std::string_view &data) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage1('E', id, data));
+    _conn->send_message(PreparedMessage('E', id, {data}));
 }
 
+void Peer::send_exception(const std::string_view &id, NodeError code, const std::string_view &message) {
+    send_exception(id, static_cast<int>(code), message);
+}
 
-void Peer::send_exception(const std::string_view &id, int code,
-        const std::string_view &message) {
-    send_exception("", {
-            {"code", code},
-            {"message", message}
-    });
+void Peer::send_exception(const std::string_view &id, int code, const std::string_view &message) {
+    send_exception(id, std::to_string(code).append(" ").append(message));
 }
 
 void Peer::send_unknown_method(const std::string_view &id,
@@ -478,45 +480,35 @@ void Peer::send_unknown_method(const std::string_view &id,
     _conn->send_message(prepareMessage1('?', id, method_name));
 }
 
-void Peer::send_welcome(const std::string_view &version,
-        const kjson::Value &data) {
+void Peer::send_welcome(const std::string_view &version, const std::string_view &data) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage('W', "", {version,data}));
+    _conn->send_message(PreparedMessage('W', version, {data}));
 }
 
-void Peer::send_hello(const std::string_view &version,const kjson::Value &data) {
+void Peer::send_hello(const std::string_view &version, const std::string_view &data) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage('H', "", {version,data}));
+    _conn->send_message(PreparedMessage('H', version, {data}));
 }
 
-void Peer::send_hello(const kjson::Value &data) {
+void Peer::send_var_set(const std::string_view &variable,const std::string_view &data) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage('W', "", {version,data}));
+    _conn->send_message(PreparedMessage('S', variable, {data}));
 }
 
-void Peer::send_var_set(const std::string_view &variable,const kjson::Value &data) {
+void Peer::send_var_unset(const std::string_view &variable) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage1('S', variable, data));
+    _conn->send_message(PreparedMessage('X', variable, {}));
 }
 
-std::string Peer::prepareHdr(char type, const std::string_view &id) {
-    return std::string(&type,1).append(id);
-}
-
-Message Peer::prepareMessage(char type, std::string_view id,kjson::Array data) {
-    return Message{MessageType::text, kjson::Value::concat({kjson::Array{prepareHdr(type, id)},data}).to_string()};
-}
-
-Message Peer::prepareMessage1(char type, std::string_view id, kjson::Value data) {
-    return Message{MessageType::text, kjson::Value(kjson::Array{kjson::Value(prepareHdr(type, id)),data}).to_string()};
-}
-
-void Peer::set_encoding(kjson::OutputType ot) {
-    _enc = ot;
-}
-
-kjson::OutputType Peer::get_encoding() const {
-    return _enc;
+Peer::PreparedMessage::PreparedMessage(char type, const std::string_view &topic, const std::initializer_list<std::string_view> &data)
+:Message(MessageType::text)
+{
+    push_back(type);
+    append(topic);
+    for (const std::string_view &x:data) {
+        push_back('\n');
+        append(x);
+    }
 }
 
 void Peer::binary_receive(std::size_t id, BinaryContentEvent &&callback) {
