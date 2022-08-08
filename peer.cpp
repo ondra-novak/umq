@@ -18,7 +18,7 @@ void Peer::init_client(PConnection &&conn, const std::string_view &req,
 	_welcome_cb = std::move(resp);
 	_conn = std::move(conn);
 	_conn->start_listen(this);
-	Peer::send_hello(req);
+	Peer::send_hello(version, req);
 }
 
 void Peer::call(const std::string_view &method, const std::string_view &params,
@@ -26,13 +26,13 @@ void Peer::call(const std::string_view &method, const std::string_view &params,
 
 	std::unique_lock _(_lock);
 	if (!is_connected()) {
-	    result(Response(Response::ResponseType::disconnected, std::string_view()));
+	    result(Response(Response::Type::disconnected, std::string_view()));
         return;
 	}
 	int id = _call_id++;
 	std::string idstr = std::to_string(id);
 	_call_map[idstr] = std::move(result);
-    _conn->send_message(PreparedMessage('C', idstr, {method, params}));
+	send_call(idstr, method, params);
 }
 
 void Peer::subscribe(const std::string_view &topic, TopicUpdateCallback &&cb) {
@@ -114,7 +114,7 @@ void Peer::on_disconnect(DisconnectEvent &&disconnect) {
 
 
 void Peer::on_result(const std::string_view &id, const std::string_view &data) {
-	finish_call(id, Response::ResponseType::result, data);
+	finish_call(id, Response(Response::Type::result, data));
 }
 
 void Peer::on_welcome(const std::string_view &version, const std::string_view&data) {
@@ -122,7 +122,7 @@ void Peer::on_welcome(const std::string_view &version, const std::string_view&da
 }
 
 void Peer::on_exception(const std::string_view &id, const std::string_view &data) {
-	finish_call(id, Response::ResponseType::exception, data);
+	finish_call(id, Response(Response::Type::exception, data));
 }
 
 void Peer::on_topic_close(const std::string_view &topic_id) {
@@ -174,8 +174,8 @@ bool Peer::on_call(const std::string_view &id, const std::string_view &method,
 
 }
 
-void Peer::on_unknown_method(const std::string_view &id, const std::string_view &method_name) {
-	finish_call(id, Response::ResponseType::execute_error, method_name);
+void Peer::on_execute_error(const std::string_view &id, const std::string_view &method_name) {
+	finish_call(id, Response(Response::Type::execute_error, method_name));
 }
 
 bool Peer::on_binary_message(const MessageRef &msg) {
@@ -204,15 +204,14 @@ void Peer::on_set_var(const std::string_view &variable, const std::string_view &
 	_var_map[std::string(variable)] = data;
 }
 
-void Peer::finish_call(const std::string_view &id, Response::ResponseType type,
-		const std::string_view &data) {
+void Peer::finish_call(const std::string_view &id, const Response &response) {
 	std::unique_lock _(_lock);
 	auto iter = _call_map.find(std::string(id));
 	if (iter != _call_map.end()) {
 		ResponseCallback cb = std::move(iter->second);
 		_call_map.erase(iter);
 		_.unlock();
-		cb(Response(type, data));
+		cb(response);
 	}
 }
 
@@ -322,7 +321,7 @@ void Peer::on_disconnect() {
         if (x.second!=nullptr) x.second();
     }
     for (const auto &x: clmp) {
-        if (x.second!=nullptr) x.second(Response(Response::ResponseType::disconnected, std::string_view()));
+        if (x.second!=nullptr) x.second(Response(Response::Type::disconnected, std::string_view()));
     }
     for (const auto &x: bcmp) {
         if (x.second!=nullptr) x.second(false, std::string_view());
@@ -395,7 +394,7 @@ void Peer::parse_message(const MessageRef &msg) {
                               break;
                     case 'E': on_exception(id, data);
                               break;
-                    case '?': on_unknown_method(id, data);
+                    case '?': on_execute_error(id, data);
                               break;
                     case 'T': if (!on_topic_update(id, data)) send_unsubscribe(id);
                               break;
@@ -477,7 +476,7 @@ void Peer::send_exception(const std::string_view &id, int code, const std::strin
 void Peer::send_unknown_method(const std::string_view &id,
         const std::string_view &method_name) {
     if (!_conn) return;
-    _conn->send_message(prepareMessage1('?', id, method_name));
+    _conn->send_message(PreparedMessage('?', id, {method_name}));
 }
 
 void Peer::send_welcome(const std::string_view &version, const std::string_view &data) {
@@ -542,9 +541,6 @@ const char *Peer::error_to_string(NodeError err) {
 }
 
 
-Message Peer::prepareMessage(char type, std::string_view id) {
-    return Message{MessageType::text, kjson::Value(kjson::Array{prepareHdr(type, id)}).to_string()};
-}
 
 std::size_t Peer::binary_reserve_id() {
     std::unique_lock _(_lock);
@@ -570,6 +566,98 @@ void Peer::binary_send(std::size_t id, std::string &&data) {
     binary_flush();
 }
 
+void Peer::set_local_variable(const std::string_view &name, const std::any &value) {
+    std::unique_lock _(_lock);
+    auto iter = _peer_var_map.find(name);
+    if (iter == _peer_var_map.end()) {
+        _peer_var_map.emplace(std::string(name),value);
+    } else {
+        iter->second = value;
+    }
+}
+
+void Peer::set_local_variable(const std::string_view &name, std::any &&value) {
+    std::unique_lock _(_lock);
+    auto iter = _peer_var_map.find(name);
+    if (iter == _peer_var_map.end()) {
+        _peer_var_map.emplace(std::string(name),std::move(value));
+    } else {
+        iter->second = std::move(value);
+    }
+
+}
+
+bool Peer::unset_local_variable(const std::string_view &name) {
+    std::unique_lock _(_lock);
+    auto iter = _peer_var_map.find(name);
+    if (iter != _peer_var_map.end()) {
+        _peer_var_map.erase(iter);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void Peer::swap_local_variables(PeerVariables &&vars) {
+    std::unique_lock _(_lock);
+    std::swap(vars, _peer_var_map);
+}
+
+std::optional<std::any> Peer::get_local_variable(const std::string_view &name) {
+    std::shared_lock _(_lock);
+    auto iter = _peer_var_map.find(name);
+    if (iter == _peer_var_map.end()) return {};
+    else return iter->second;
+}
+
+PeerVariables Peer::get_local_variables() {
+    std::shared_lock _(_lock);
+    return _peer_var_map;
+}
+
+void Peer::on_request_continue(const std::string_view &id, const std::string_view &data) {
+    finish_call(id,
+       Response(data,
+         std::make_unique<Request>(
+            weak_from_this(), std::string(id),std::string(), std::string())));
+}
+
+void Peer::on_request_info(const std::string_view &id, const std::string_view &data) {
+    std::unique_lock _(_lock);
+    auto iter = _call_map.find(std::string(id));
+    if (iter != _call_map.end()) {
+        iter->second(Response(Response::Type::information,data));
+    }
+}
+
+void Peer::send_info(const std::string_view &id, const std::string_view &data) {
+    if (!_conn) return;
+    _conn->send_message(PreparedMessage('I', id, {data}));
+
+}
+
+void Peer::send_continue_request(const std::string_view &id, const std::string_view &data) {
+    if (!_conn) return;
+    _conn->send_message(PreparedMessage('P', id, {data}));
+}
+
+void Peer::send_call(const std::string_view &id, const std::string_view &method, const std::string_view &params) {
+    if (!_conn) return;
+    _conn->send_message(PreparedMessage('C', id, {method, params}));
+}
+
+void Peer::continue_request(const std::string_view &id, const std::string_view &data, ResponseCallback &&cb) {
+    std::unique_lock _(_lock);
+
+    if (!is_connected()) {
+        cb(Response(Response::Type::disconnected, std::string_view()));
+        return;
+    }
+    _call_map[std::string(id)] = std::move(cb);
+    send_continue_request(id, data);
+
+}
+
 void Peer::binary_flush() {
     while (!_bin_res.empty() && _bin_res.back().has_value()) {
         if (_conn) {
@@ -581,7 +669,6 @@ void Peer::binary_flush() {
         _bin_res.pop_back();
     }
 }
-
 
 Peer::BinaryMessage::BinaryMessage(BinaryMessage &&other)
 :_peer(std::move(other._peer)),_id(std::move(other._id))

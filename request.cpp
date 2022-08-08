@@ -13,10 +13,10 @@ Request::Request(const PWkPeer &node, const std::string_view &id,
 }
 
 Request::~Request() {
-	if (!_response_sent) set_no_result();
+	if (!_response_sent) send_empty_result();
 }
 
-void Request::set_result(const std::string_view &val) {
+void Request::send_result(const std::string_view &val) {
 	if (_response_sent) return;
 	PPeer nd = _node.lock();
 	if (nd != nullptr) {
@@ -25,7 +25,7 @@ void Request::set_result(const std::string_view &val) {
 	_response_sent = true;
 }
 
-void Request::set_exception(const std::string_view &val) {
+void Request::send_exception(const std::string_view &val) {
 	if (_response_sent) return;
 	PPeer nd = _node.lock();
 	if (nd != nullptr) {
@@ -34,14 +34,24 @@ void Request::set_exception(const std::string_view &val) {
 	_response_sent = true;
 }
 
-void Request::set_exception(int code, const std::string_view &message) {
+void Request::send_exception(int code, const std::string_view &message) {
     auto msg = std::to_string(code);
     msg.push_back(' ');
     msg.append(message);
-	set_exception(msg);
+	send_exception(msg);
 }
 
-void Request::signal_unknown_call(const std::string_view &reason) {
+void Request::send_info(const std::string_view &text) {
+    if (_response_sent) return;
+    PPeer nd = _node.lock();
+    if (nd != nullptr) {
+        nd->send_info(_id, text);
+    }
+}
+
+
+
+void Request::send_execute_error(const std::string_view &reason) {
 	if (_response_sent) return;
 	PPeer nd = _node.lock();
 	if (nd != nullptr) {
@@ -60,12 +70,24 @@ Request::Request(Request &&req)
 	req._response_sent = true;
 }
 
-void Request::set_no_result() {
-	set_result(nullptr);
+void Request::send_empty_result() {
+	send_result(std::string_view());
+}
+
+void Request::send_request(const std::string_view &data, ResponseCallback &&cb) {
+
 }
 
 const std::string &Request::get_data() const {
 	return _args;
+}
+
+std::pair<int, std::string_view> Response::get_exception() const {
+    char *cont;
+    int code = std::strtol(_d.c_str(), &cont, 10);
+    std::string_view msg(cont);
+    userver::trim(msg);
+    return {code, msg};
 }
 
 }

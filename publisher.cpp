@@ -58,7 +58,7 @@ void Publisher::reset() {
     std::vector<Subscriber> x = std::move(_subs);
     _.unlock();
     for (auto &s: x) {
-        s.cb(kjson::Value());
+        s.cb(std::string_view());
     }
     _unsubs.clear();
 }

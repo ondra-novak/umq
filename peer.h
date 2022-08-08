@@ -65,7 +65,7 @@ using BinaryContentEvent = ondra_shared::Callback<void(bool valid, const std::st
 
 using SharedVariables = std::map<std::string, std::string, std::less<> >;
 
-using PeerVariables = std::map<std::string, std::any>;
+using PeerVariables = std::map<std::string, std::any, std::less<> >;
 
 class Peer: protected AbstractConnectionListener, public std::enable_shared_from_this<Peer> {
 public:
@@ -247,9 +247,15 @@ public:
 
     void set_local_variable(const std::string_view &name, const std::any &value);
 
+    void set_local_variable(const std::string_view &name, std::any &&value);
+
+    bool unset_local_variable(const std::string_view &name);
+
     std::optional<std::any> get_local_variable(const std::string_view &name);
 
     PeerVariables get_local_variables();
+
+    void swap_local_variables(PeerVariables &&vars);
 
 
     void set_hwm(std::size_t sz);
@@ -326,7 +332,7 @@ protected:
 			const std::string_view &data);
 	bool on_call(const std::string_view &id, const std::string_view &method,
 			const std::string_view &args);
-	void on_unknown_method(const std::string_view &id, const std::string_view &method_name);
+	void on_execute_error(const std::string_view &id, const std::string_view &method_name);
 	bool on_binary_message(const umq::MessageRef &msg);
 	void on_set_var(const std::string_view &variable, const std::string_view &data);
 	void on_unset_var(const std::string_view &variable);
@@ -373,6 +379,10 @@ protected:
      */
     void send_result(const std::string_view &id, const std::string_view &data);
 
+    void send_info(const std::string_view &id, const std::string_view &data);
+
+    void send_continue_request(const std::string_view &id, const std::string_view &data);
+
     ///Sends exception of RPC call
     /**
      * @param id id of request
@@ -415,9 +425,11 @@ protected:
 
     void send_var_unset(const std::string_view &variable);
 
-
+    void send_call(const std::string_view &id, const std::string_view &method, const std::string_view &params);
 
     static const char *error_to_string(NodeError err);
+
+    void continue_request(const std::string_view &id, const std::string_view &data, ResponseCallback &&cb);
 
 
 
@@ -449,6 +461,7 @@ protected:
     DisconnectEvent _discnt_cb;
     SharedVariables _var_map;
     SharedVariables _local_var_map;
+    PeerVariables _peer_var_map;
     std::size_t _hwm;
 
     mutable std::shared_timed_mutex _lock;
@@ -457,19 +470,10 @@ protected:
     std::size_t _rcv_bin_order = 0;
 
 
-    void finish_call(const std::string_view &id,
-    				Response::ResponseType type,
-					const std::string_view &data);
+    void finish_call(const std::string_view &id, const Response &response);
 
     static std::string calc_hash(const std::string_view &bin_content);
 
-    void prepareMessage(Message &msg, char type, std::string_view &topic, const std::initializer_list<std::string_view> &data);
-
-
-    static std::string prepareHdr(char type, const std::string_view &id);
-    Message prepareMessage(char type, std::string_view id, kjson::Array data);
-    Message prepareMessage1(char type, std::string_view id, std::string_view data);
-    Message prepareMessage(char type, std::string_view id);
 
     void send_node_error(NodeError error);
 
