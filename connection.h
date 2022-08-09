@@ -13,16 +13,9 @@ namespace umq {
 
 struct MessageRef;
 
-class AbstractConnectionListener {
-public:
 
-    virtual ~AbstractConnectionListener() = default;
-
-    virtual void parse_message(const MessageRef &msg) = 0;
-
-    virtual void on_disconnect() = 0;
-
-};
+///Received message, if not defined, then disconnected
+using ConnectionListener = userver::Callback<void(const std::optional<MessageRef> &msg)>;
 
 ///Abstract connection for node
 /** NOTE object don't need to be MT Safe. Especially send_message must be interlocked */
@@ -51,7 +44,7 @@ public:
      * connection is destroyed, you must call stop_listen to ensure, that
      * there is no pending message to be processed.
      */
-    virtual void start_listen(AbstractConnectionListener *listener) = 0;
+    virtual void start_listen(ConnectionListener &&listener) = 0;
 
     ///tests, whether high watermark reached
     /**

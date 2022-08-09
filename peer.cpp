@@ -10,14 +10,14 @@ Peer::Peer():_hwm(default_hwm) {}
 void Peer::init_server(PConnection &&conn, HelloRequest &&resp) {
 	_hello_cb = std::move(resp);
 	_conn = std::move(conn);
-	_conn->start_listen(this);
+	_conn->start_listen(ConnectionListener(this,&Peer::listener_fn));
 }
 
 void Peer::init_client(PConnection &&conn, const std::string_view &req,
 		WelcomeResponse &&resp) {
 	_welcome_cb = std::move(resp);
 	_conn = std::move(conn);
-	_conn->start_listen(this);
+	_conn->start_listen(ConnectionListener(this,&Peer::listener_fn));
 	Peer::send_hello(version, req);
 }
 
@@ -163,13 +163,13 @@ bool Peer::on_call(const std::string_view &id, const std::string_view &method,
 		const std::string_view &args) {
 	auto mlk = _methods.lock_shared();
 	std::string strm(method);
-	auto iter = mlk->find(strm);
-	if (iter != mlk->end()) {
-		Request req(weak_from_this(),id,strm,args);
-		iter->second(req);
-		return true;
-	} else{
-		return false;
+	const MethodCall *m = mlk->find_method(strm);
+	if (m) {
+	    Request req(weak_from_this(),id,strm,args);
+	    (*m)(req);
+	    return true;
+	} else {
+	    return false;
 	}
 
 }
@@ -300,7 +300,7 @@ SharedVariables Peer::get_peer_variables() const {
     return _var_map;
 }
 
-void Peer::on_disconnect() {
+void Peer::disconnect() {
     DisconnectEvent cb;
     Topics tpcs;
     CallMap clmp;
@@ -326,7 +326,17 @@ void Peer::on_disconnect() {
     for (const auto &x: bcmp) {
         if (x.second!=nullptr) x.second(false, std::string_view());
     }
+
 }
+
+void Peer::listener_fn(const std::optional<MessageRef> &msg) {
+    if (msg.has_value()) {
+        parse_message(*msg);
+    } else {
+        disconnect();
+    }
+}
+
 
 void Peer::keep_until_disconnected() {
 	on_disconnect([me=shared_from_this()]() mutable {
@@ -345,7 +355,7 @@ std::size_t Peer::get_hwm() const {
 }
 
 Peer::~Peer() {
-    Peer::on_disconnect();
+    disconnect();
 }
 
 std::string Peer::calc_hash(const std::string_view &bin_content) {
@@ -355,7 +365,7 @@ std::string Peer::calc_hash(const std::string_view &bin_content) {
 void Peer::parse_message(const MessageRef &msg) {
     if (msg.type == MessageType::binary) {
         if (!on_binary_message(msg)) {
-            send_node_error(NodeError::unexpectedBinaryFrame);
+            send_node_error(PeerError::unexpectedBinaryFrame);
         }
     } else {
         std::string_view data = msg.data;
@@ -367,21 +377,21 @@ void Peer::parse_message(const MessageRef &msg) {
             try {
                 switch (mt) {
                     default:
-                        send_node_error(NodeError::unknownMessageType);;
+                        send_node_error(PeerError::unknownMessageType);;
                         break;
                     case 'C': name = userver::splitAt("\n", data);
                               try {
                                   if (!on_call(id, name, data)) {
-                                      send_unknown_method(id, name);
+                                      send_execute_error(id, "Method not found");
                                   }
                               } catch (const std::exception &e) {
-                                  send_exception(id, NodeError::unhandledException, e.what());
+                                  send_exception(id, PeerError::unhandledException, e.what());
                               }
                               break;
                     case 'P': try {
                                   on_request_continue(id, data);
                               } catch (const std::exception &e) {
-                                  send_exception(id, NodeError::unhandledException, e.what());
+                                  send_exception(id, PeerError::unhandledException, e.what());
                               }
                               break;
                     case 'I': try {
@@ -407,23 +417,23 @@ void Peer::parse_message(const MessageRef &msg) {
                     case 'X': on_unset_var(id);
                               break;
                     case 'H': if (id != version) {
-                                    send_node_error(NodeError::unsupportedVersion);
+                                    send_node_error(PeerError::unsupportedVersion);
                               } else {
                                   send_welcome(version, on_hello(id, data));
                               }
                               break;
                     case 'W': if (id != version) {
-                                  send_node_error(NodeError::unsupportedVersion);
+                                  send_node_error(PeerError::unsupportedVersion);
                               } else {
                                   on_welcome(id, data);
                               }
                               break;
                 }
             } catch (const std::exception &e) {
-                send_node_error(NodeError::messageProcessingError);
+                send_node_error(PeerError::messageProcessingError);
             }
         } else {
-            send_node_error(NodeError::messageParseError);
+            send_node_error(PeerError::messageParseError);
         }
     }
 }
@@ -435,7 +445,7 @@ bool Peer::send_topic_update(const std::string_view &topic_id, const std::string
     if (_conn->is_hwm(hwm_size)) {
         switch(hwmb) {
         case HighWaterMarkBehavior::block: _conn->flush();break;
-        case HighWaterMarkBehavior::close: on_disconnect();break;
+        case HighWaterMarkBehavior::close: disconnect();break;
         case HighWaterMarkBehavior::ignore: break;
         case HighWaterMarkBehavior::skip: return true;
         case HighWaterMarkBehavior::unsubscribe: send_topic_close(topic_id);return false;
@@ -465,7 +475,7 @@ void Peer::send_exception(const std::string_view &id, const std::string_view &da
     _conn->send_message(PreparedMessage('E', id, {data}));
 }
 
-void Peer::send_exception(const std::string_view &id, NodeError code, const std::string_view &message) {
+void Peer::send_exception(const std::string_view &id, PeerError code, const std::string_view &message) {
     send_exception(id, static_cast<int>(code), message);
 }
 
@@ -473,7 +483,7 @@ void Peer::send_exception(const std::string_view &id, int code, const std::strin
     send_exception(id, std::to_string(code).append(" ").append(message));
 }
 
-void Peer::send_unknown_method(const std::string_view &id,
+void Peer::send_execute_error(const std::string_view &id,
         const std::string_view &method_name) {
     if (!_conn) return;
     _conn->send_message(PreparedMessage('?', id, {method_name}));
@@ -515,27 +525,21 @@ void Peer::binary_receive(std::size_t id, BinaryContentEvent &&callback) {
     _bin_cbs.emplace(id, std::move(callback));
 }
 
-void Peer::send_node_error(NodeError error) {
+void Peer::send_node_error(PeerError error) {
     std::unique_lock _(_lock);
     send_exception("",static_cast<int>(error),error_to_string(error));
-    on_disconnect();
+    disconnect();
 }
 
-const char *Peer::error_to_string(NodeError err) {
+const char *Peer::error_to_string(PeerError err) {
     switch(err) {
-    case NodeError::noError: return "No error";
-    case NodeError::unexpectedBinaryFrame: return "Unexpected binary frame";
-    case NodeError::messageParseError: return "Message parse error";
-    case NodeError::invalidMessageFormat: return "Invalid message format";
-    case NodeError::invalidMesssgeFormat_Call: return "Invalid message format - message C - Call";
-    case NodeError::invalidMessageFormat_Result: return "Invalid message format - message R - Result";
-    case NodeError::invalidMessageFormat_Exception: return "Invalid message format - message E - Exception";
-    case NodeError::invalidMessageFormat_UnknownMethod: return "Invalid message format - message ? - Unknown method";
-    case NodeError::invalidMessageFormat_TopicUpdate: return "Invalid message format - message T - Topic update";
-    case NodeError::unknownMessageType: return "Unknown message type";
-    case NodeError::messageProcessingError: return "Internal node error while processing a message";
-    case NodeError::unsupportedVersion: return "Unsupported version";
-    case NodeError::unhandledException: return "Unhandled exception";
+    case PeerError::noError: return "No error";
+    case PeerError::unexpectedBinaryFrame: return "Unexpected binary frame";
+    case PeerError::messageParseError: return "Message parse error";
+    case PeerError::unknownMessageType: return "Unknown message type";
+    case PeerError::messageProcessingError: return "Internal node error while processing a message";
+    case PeerError::unsupportedVersion: return "Unsupported version";
+    case PeerError::unhandledException: return "Unhandled exception";
     default: return "Undetermined error";
     }
 }
@@ -662,7 +666,7 @@ void Peer::binary_flush() {
     while (!_bin_res.empty() && _bin_res.back().has_value()) {
         if (_conn) {
             if (!_conn->send_message({MessageType::binary, *_bin_res.back()})) {
-                on_disconnect();
+                disconnect();
             }
         }
         _send_bin_order++;

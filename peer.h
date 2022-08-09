@@ -21,20 +21,14 @@
 
 namespace umq {
 
-enum class NodeError {
+enum class PeerError {
     noError = 0,
-    unexpectedBinaryFrame,
-    messageParseError,
-    invalidMessageFormat,
-    invalidMesssgeFormat_Call,
-    invalidMessageFormat_Result,
-    invalidMessageFormat_Exception,
-    invalidMessageFormat_UnknownMethod,
-    invalidMessageFormat_TopicUpdate,
-    unknownMessageType,
-    messageProcessingError,
-    unsupportedVersion,
-    unhandledException,
+    unexpectedBinaryFrame=1,
+    messageParseError=2,
+    unknownMessageType=3,
+    messageProcessingError=4,
+    unsupportedVersion=5,
+    unhandledException=6,
 };
 
 ///Defines behavior for high water mark signal
@@ -67,7 +61,7 @@ using SharedVariables = std::map<std::string, std::string, std::less<> >;
 
 using PeerVariables = std::map<std::string, std::any, std::less<> >;
 
-class Peer: protected AbstractConnectionListener, public std::enable_shared_from_this<Peer> {
+class Peer: public std::enable_shared_from_this<Peer> {
 public:
 
     using PConnection = std::unique_ptr<AbstractConnection>;
@@ -336,7 +330,6 @@ protected:
 	bool on_binary_message(const umq::MessageRef &msg);
 	void on_set_var(const std::string_view &variable, const std::string_view &data);
 	void on_unset_var(const std::string_view &variable);
-    void on_disconnect() override;
     void on_request_continue(const std::string_view &id, const std::string_view &data);
     void on_request_info(const std::string_view &id, const std::string_view &data);
 
@@ -392,14 +385,14 @@ protected:
 
     void send_exception(const std::string_view &id, int code, const std::string_view &message);
 
-    void send_exception(const std::string_view &id, NodeError code, const std::string_view &message);
+    void send_exception(const std::string_view &id, PeerError code, const std::string_view &message);
 
     ///Sends about unknown method
     /**
      * @param id id of request
      * @param method_name method name
      */
-    void send_unknown_method(const std::string_view &id, const std::string_view &method_name);
+    void send_execute_error(const std::string_view &id, const std::string_view &method_name);
 
     ///Sends welcome
     /**
@@ -427,7 +420,7 @@ protected:
 
     void send_call(const std::string_view &id, const std::string_view &method, const std::string_view &params);
 
-    static const char *error_to_string(NodeError err);
+    static const char *error_to_string(PeerError err);
 
     void continue_request(const std::string_view &id, const std::string_view &data, ResponseCallback &&cb);
 
@@ -475,7 +468,7 @@ protected:
     static std::string calc_hash(const std::string_view &bin_content);
 
 
-    void send_node_error(NodeError error);
+    void send_node_error(PeerError error);
 
     std::size_t binary_reserve_id();
 
@@ -489,6 +482,9 @@ protected:
     public:
         PreparedMessage(char type, const std::string_view &topic, const std::initializer_list<std::string_view> &data);
     };
+
+    void listener_fn(const std::optional<MessageRef> &msg);
+    void disconnect();
 
 };
 

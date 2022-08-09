@@ -55,7 +55,7 @@ void Request::send_execute_error(const std::string_view &reason) {
 	if (_response_sent) return;
 	PPeer nd = _node.lock();
 	if (nd != nullptr) {
-		nd->send_unknown_method(_id,reason);
+		nd->send_execute_error(_id,reason);
 	}
 	_response_sent = true;
 }
