@@ -16,7 +16,7 @@ namespace umq {
 class WSConnection: public AbstractConnection {
 public:
     WSConnection(userver::WSStream &&stream);
-    virtual void start_listen(umq::ConnectionListener &&listener) override;
+    virtual void start_listen(AbstractConnectionListener &listener) override;
     virtual void flush() override;
     virtual bool send_message(const umq::MessageRef &msg) override;
     virtual bool is_hwm(std::size_t v) override;

@@ -23,7 +23,7 @@ public:
 	 * @param cb a callback function called on publish/topic updae
 	 * @return ID of the subscriber
 	 */
-	std::size_t subscribe(TopicUpdateCallback &cb);
+	std::size_t subscribe(TopicUpdateCallback &&cb);
 
 	///Unsubscribe the subscriber
 	/**

@@ -11,7 +11,7 @@
 namespace umq {
 
 
-using MethodCall = ondra_shared::Callback<void(Request &req)>;
+using MethodCall = ondra_shared::Callback<void(Request &&req)>;
 
 class MethodList {
 public:

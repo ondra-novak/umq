@@ -3,22 +3,29 @@
 #include <shared/trailer.h>
 namespace umq {
 
+
+std::string_view Peer::version = "1.0.0";
+
 std::size_t Peer::default_hwm = 16384;
 
-Peer::Peer():_hwm(default_hwm) {}
+Peer::Peer():_listener(*this), _hwm(default_hwm) {}
+
+PPeer Peer::make() {
+    return PPeer(new Peer());
+}
 
 void Peer::init_server(PConnection &&conn, HelloRequest &&resp) {
 	_hello_cb = std::move(resp);
 	_conn = std::move(conn);
-	_conn->start_listen(ConnectionListener(this,&Peer::listener_fn));
+	_conn->start_listen(_listener);
 }
 
 void Peer::init_client(PConnection &&conn, const std::string_view &req,
 		WelcomeResponse &&resp) {
 	_welcome_cb = std::move(resp);
 	_conn = std::move(conn);
-	_conn->start_listen(ConnectionListener(this,&Peer::listener_fn));
-	Peer::send_hello(version, req);
+	_conn->start_listen(_listener);
+	send_hello(version, req);
 }
 
 void Peer::call(const std::string_view &method, const std::string_view &params,
@@ -60,13 +67,13 @@ TopicUpdateCallback Peer::start_publish(const std::string_view &topic, HighWater
                 }
             }
         });
-        return [=, trailer = std::move(t), me = weak_from_this()](const std::string_view &data)mutable->bool {
+        return [=, trailer = std::move(trailer), me = weak_from_this()](const std::string_view &data)mutable->bool {
             auto melk = me.lock();
             if (melk != nullptr) {
                 std::shared_lock _(melk->_lock);
                 auto iter = melk->_topic_map.find(t);
                 if (iter != melk->_topic_map.end()) {
-                    return melk->send_topic_update(topic, data, hwmb, hwm_size);
+                    return melk->send_topic_update(t, data, hwmb, hwm_size);
                 } else{
                     return false;
                 }
@@ -159,23 +166,26 @@ bool Peer::on_topic_update(const std::string_view &topic_id, const std::string_v
 	return false;
 }
 
-bool Peer::on_call(const std::string_view &id, const std::string_view &method,
+bool Peer::on_method_call(const std::string_view &id, const std::string_view &method,
 		const std::string_view &args) {
-	auto mlk = _methods.lock_shared();
-	std::string strm(method);
-	const MethodCall *m = mlk->find_method(strm);
-	if (m) {
-	    Request req(weak_from_this(),id,strm,args);
-	    (*m)(req);
-	    return true;
-	} else {
-	    return false;
-	}
+    if (_methods != nullptr) {
+        auto mlk = _methods.lock_shared();
+        std::string strm(method);
+        const MethodCall *m = mlk->find_method(strm);
+        if (m) {
+            (*m)(Request(weak_from_this(),id,strm,args));
+            return true;
+        } else {
+            return false;
+        }
+    } else {
+        return false;
+    }
 
 }
 
-void Peer::on_execute_error(const std::string_view &id, const std::string_view &method_name) {
-	finish_call(id, Response(Response::Type::execute_error, method_name));
+void Peer::on_execute_error(const std::string_view &id, const std::string_view &msg) {
+	finish_call(id, Response(Response::Type::execute_error, msg));
 }
 
 bool Peer::on_binary_message(const MessageRef &msg) {
@@ -204,14 +214,14 @@ void Peer::on_set_var(const std::string_view &variable, const std::string_view &
 	_var_map[std::string(variable)] = data;
 }
 
-void Peer::finish_call(const std::string_view &id, const Response &response) {
+void Peer::finish_call(const std::string_view &id, Response &&response) {
 	std::unique_lock _(_lock);
 	auto iter = _call_map.find(std::string(id));
 	if (iter != _call_map.end()) {
 		ResponseCallback cb = std::move(iter->second);
 		_call_map.erase(iter);
 		_.unlock();
-		cb(response);
+		cb(std::move(response));
 	}
 }
 
@@ -300,6 +310,52 @@ SharedVariables Peer::get_peer_variables() const {
     return _var_map;
 }
 
+bool Peer::on_callback(const std::string_view &id, const std::string_view &name, const std::string_view &args) {
+    std::unique_lock _(_lock);
+    auto iter = _cb_map.find(name);
+    if (iter != _cb_map.end()) {
+        auto cb = std::move(iter->second);
+        _cb_map.erase(iter);
+        _.unlock();
+        cb(Request(weak_from_this(), id, name, args));
+        return true;
+    } else {
+        return false;
+    }
+}
+
+std::string Peer::reg_callback(MethodCall &&c) {
+    std::unique_lock _(_lock);
+    int id = _call_id++;
+    std::string idstr = std::to_string(id);
+    idstr.append("cb");
+    _cb_map[idstr] = std::move(c);
+    return idstr;
+}
+
+bool Peer::unreg_callback(const std::string_view &id) {
+    std::unique_lock _(_lock);
+    auto iter = _cb_map.find(id);
+    if (iter != _cb_map.end()) {
+        _cb_map.erase(iter);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void Peer::call_callback(const std::string_view &name, const std::string_view &args, ResponseCallback &&response) {
+    std::unique_lock _(_lock);
+    if (!is_connected()) {
+        response(Response(Response::Type::disconnected, std::string_view()));
+    } else {
+        int id = _call_id++;
+        std::string idstr = std::to_string(id);
+        _call_map[idstr] = std::move(response);
+        send_callback_call(idstr, name, args);
+    }
+}
+
 void Peer::disconnect() {
     DisconnectEvent cb;
     Topics tpcs;
@@ -358,9 +414,6 @@ Peer::~Peer() {
     disconnect();
 }
 
-std::string Peer::calc_hash(const std::string_view &bin_content) {
-	throw;
-}
 
 void Peer::parse_message(const MessageRef &msg) {
     if (msg.type == MessageType::binary) {
@@ -375,59 +428,68 @@ void Peer::parse_message(const MessageRef &msg) {
             char mt = topic[0];
             std::string_view id = topic.substr(1);
             try {
-                switch (mt) {
+                switch (static_cast<PeerMsgType>(mt)) {
                     default:
                         send_node_error(PeerError::unknownMessageType);;
                         break;
-                    case 'C': name = userver::splitAt("\n", data);
-                              try {
-                                  if (!on_call(id, name, data)) {
-                                      send_execute_error(id, "Method not found");
-                                  }
-                              } catch (const std::exception &e) {
-                                  send_exception(id, PeerError::unhandledException, e.what());
-                              }
-                              break;
-                    case 'P': try {
-                                  on_request_continue(id, data);
-                              } catch (const std::exception &e) {
-                                  send_exception(id, PeerError::unhandledException, e.what());
-                              }
-                              break;
-                    case 'I': try {
-                                  on_request_info(id, data);
-                              } catch (...) {
-                                  //TODO: use global information channel?
-                              }
-                              break;
-                    case 'R': on_result(id, data);
-                              break;
-                    case 'E': on_exception(id, data);
-                              break;
-                    case '?': on_execute_error(id, data);
-                              break;
-                    case 'T': if (!on_topic_update(id, data)) send_unsubscribe(id);
-                              break;
-                    case 'U': on_unsubscribe(id);
-                              break;
-                    case 'N': on_topic_close(id);
-                              break;
-                    case 'S': on_set_var(id, data);
-                              break;
-                    case 'X': on_unset_var(id);
-                              break;
-                    case 'H': if (id != version) {
-                                    send_node_error(PeerError::unsupportedVersion);
-                              } else {
-                                  send_welcome(version, on_hello(id, data));
-                              }
-                              break;
-                    case 'W': if (id != version) {
-                                  send_node_error(PeerError::unsupportedVersion);
-                              } else {
-                                  on_welcome(id, data);
-                              }
-                              break;
+                    case PeerMsgType::method_call :
+                        name = userver::splitAt("\n", data);
+                        try {
+                          if (!on_method_call(id, name, data)) {
+                              send_execute_error(id, PeerError::methodNotFound);
+                          }
+                        } catch (const std::exception &e) {
+                          send_exception(id, PeerError::unhandledException, e.what());
+                        }
+                        break;
+                    case PeerMsgType::callback:
+                        name = userver::splitAt("\n", data);
+                        try {
+                          if (!on_callback(id, name, data)) {
+                              send_execute_error(id, PeerError::callbackIsNotRegistered);
+                          }
+                        } catch (const std::exception &e) {
+                          send_exception(id, PeerError::unhandledException, e.what());
+                        }
+                        break;
+                    case PeerMsgType::result:
+                        on_result(id, data);
+                        break;
+                    case PeerMsgType::exception:
+                        on_exception(id, data);
+                        break;
+                    case PeerMsgType::execution_error:
+                        on_execute_error(id, data);
+                        break;
+                    case PeerMsgType::topic_update:
+                        on_topic_update(id, data);
+                        break;
+                    case PeerMsgType::unsubscribe:
+                        on_unsubscribe(id);
+                        break;
+                    case PeerMsgType::topic_close:
+                        on_topic_close(id);
+                        break;
+                    case PeerMsgType::var_set:
+                        on_set_var(id, data);
+                        break;
+                    case PeerMsgType::var_unset:
+                        on_unset_var(id);
+                        break;
+                    case PeerMsgType::hello:
+                        if (id != version) {
+                            send_node_error(PeerError::unsupportedVersion);
+                        } else {
+                            send_welcome(version, on_hello(id, data));
+                        }
+                        break;
+                    case PeerMsgType::welcome:
+                        if (id != version) {
+                            send_node_error(PeerError::unsupportedVersion);
+                        } else {
+                            on_welcome(id, data);
+                        }
+                        break;
                 }
             } catch (const std::exception &e) {
                 send_node_error(PeerError::messageProcessingError);
@@ -451,28 +513,24 @@ bool Peer::send_topic_update(const std::string_view &topic_id, const std::string
         case HighWaterMarkBehavior::unsubscribe: send_topic_close(topic_id);return false;
         }
     }
-    _conn->send_message(PreparedMessage('T', topic_id, {data}));
+    _conn->send_message(PreparedMessage(PeerMsgType::topic_update, topic_id, {data}));
     return true;
 }
 
 void Peer::send_topic_close(const std::string_view &topic_id) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('N', topic_id, {}));
+    send_message(PreparedMessage(PeerMsgType::topic_close, topic_id, {}));
 }
 
 void Peer::send_unsubscribe(const std::string_view &topic_id) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('U', topic_id, {}));
+    send_message(PreparedMessage(PeerMsgType::unsubscribe, topic_id, {}));
 }
 
 void Peer::send_result(const std::string_view &id, const std::string_view &data) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('R', id, {data}));
+    send_message(PreparedMessage(PeerMsgType::result, id, {data}));
 }
 
 void Peer::send_exception(const std::string_view &id, const std::string_view &data) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('E', id, {data}));
+    send_message(PreparedMessage(PeerMsgType::exception, id, {data}));
 }
 
 void Peer::send_exception(const std::string_view &id, PeerError code, const std::string_view &message) {
@@ -483,36 +541,43 @@ void Peer::send_exception(const std::string_view &id, int code, const std::strin
     send_exception(id, std::to_string(code).append(" ").append(message));
 }
 
-void Peer::send_execute_error(const std::string_view &id,
-        const std::string_view &method_name) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('?', id, {method_name}));
+void Peer::send_execute_error(const std::string_view &id, const std::string_view &msg) {
+    send_message(PreparedMessage(PeerMsgType::execution_error, id, {msg}));
+}
+void Peer::send_execute_error(const std::string_view &id, PeerError code) {
+    std::string s = std::to_string(static_cast<int>(code)).append(" ").append(error_to_string(code));
+    send_execute_error(id,  s);
 }
 
 void Peer::send_welcome(const std::string_view &version, const std::string_view &data) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('W', version, {data}));
+    send_message(PreparedMessage(PeerMsgType::welcome, version, {data}));
 }
 
 void Peer::send_hello(const std::string_view &version, const std::string_view &data) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('H', version, {data}));
+    send_message(PreparedMessage(PeerMsgType::hello, version, {data}));
 }
 
 void Peer::send_var_set(const std::string_view &variable,const std::string_view &data) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('S', variable, {data}));
+    send_message(PreparedMessage(PeerMsgType::var_set, variable, {data}));
 }
 
 void Peer::send_var_unset(const std::string_view &variable) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('X', variable, {}));
+    send_message(PreparedMessage(PeerMsgType::var_unset, variable, {}));
+}
+void Peer::send_callback_call(const std::string_view &id, const std::string_view &name, const std::string_view &args) {
+    send_message(PreparedMessage(PeerMsgType::callback, id, {name, args}));
 }
 
-Peer::PreparedMessage::PreparedMessage(char type, const std::string_view &topic, const std::initializer_list<std::string_view> &data)
+void Peer::send_message(const MessageRef &msg) {
+    if (!_conn) return;
+    _conn->send_message(msg);
+}
+
+
+Peer::PreparedMessage::PreparedMessage(PeerMsgType type, const std::string_view &topic, const std::initializer_list<std::string_view> &data)
 :Message(MessageType::text)
 {
-    push_back(type);
+    push_back(static_cast<char>(type));
     append(topic);
     for (const std::string_view &x:data) {
         push_back('\n');
@@ -540,6 +605,8 @@ const char *Peer::error_to_string(PeerError err) {
     case PeerError::messageProcessingError: return "Internal node error while processing a message";
     case PeerError::unsupportedVersion: return "Unsupported version";
     case PeerError::unhandledException: return "Unhandled exception";
+    case PeerError::methodNotFound: return "Method not defined";
+    case PeerError::callbackIsNotRegistered: return "Callback is not registered";
     default: return "Undetermined error";
     }
 }
@@ -619,47 +686,8 @@ PeerVariables Peer::get_local_variables() {
     return _peer_var_map;
 }
 
-void Peer::on_request_continue(const std::string_view &id, const std::string_view &data) {
-    finish_call(id,
-       Response(data,
-         std::make_unique<Request>(
-            weak_from_this(), std::string(id),std::string(), std::string())));
-}
-
-void Peer::on_request_info(const std::string_view &id, const std::string_view &data) {
-    std::unique_lock _(_lock);
-    auto iter = _call_map.find(std::string(id));
-    if (iter != _call_map.end()) {
-        iter->second(Response(Response::Type::information,data));
-    }
-}
-
-void Peer::send_info(const std::string_view &id, const std::string_view &data) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('I', id, {data}));
-
-}
-
-void Peer::send_continue_request(const std::string_view &id, const std::string_view &data) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('P', id, {data}));
-}
-
 void Peer::send_call(const std::string_view &id, const std::string_view &method, const std::string_view &params) {
-    if (!_conn) return;
-    _conn->send_message(PreparedMessage('C', id, {method, params}));
-}
-
-void Peer::continue_request(const std::string_view &id, const std::string_view &data, ResponseCallback &&cb) {
-    std::unique_lock _(_lock);
-
-    if (!is_connected()) {
-        cb(Response(Response::Type::disconnected, std::string_view()));
-        return;
-    }
-    _call_map[std::string(id)] = std::move(cb);
-    send_continue_request(id, data);
-
+    send_message(PreparedMessage(PeerMsgType::method_call, id, {method, params}));
 }
 
 void Peer::binary_flush() {
@@ -732,5 +760,18 @@ Peer::BinaryMessage::BinaryMessage(const PWkPeer &peer)
     if (p) _id = p->binary_reserve_id();
 }
 
+Peer::Listener::Listener(Peer &owner):_owner(owner) {
+
+}
+
+void Peer::Listener::on_close() {
+    _owner.disconnect();
+}
+
+
+void Peer::Listener::on_message(const umq::MessageRef &msg) {
+    _owner.parse_message(msg);
+
+}
 
 }

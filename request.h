@@ -3,6 +3,7 @@
 #include <memory>
 #include <string_view>
 #include <shared/callback.h>
+#include <vector>
 
 namespace umq {
 
@@ -23,7 +24,7 @@ using TopicUpdateCallback = ondra_shared::Callback<bool(const std::string_view &
 class Response;
 class Request;
 
-using ResponseCallback = ondra_shared::Callback<void(const Response &)>;
+using ResponseCallback = ondra_shared::Callback<void(Response &&)>;
 
 class Request {
 public:
@@ -39,15 +40,7 @@ public:
     Request &operator=(const Request &req) = delete;
 
     ///Send result and finish the request
-    void send_result(const std::string_view &val);
-    ///Send request as the result
-    /**
-     * By sending request, other side receives request to send additional informations,
-     * (reverses request)
-     * @param data data associated with the request
-     * @param cb callback function called when result is received
-     */
-    void send_request(const std::string_view &data, ResponseCallback &&cb);
+    void send_result(const std::string_view &val) ;
     ///Send exception and finish the request
     /**
      * @param val excetion data
@@ -70,31 +63,52 @@ public:
     void send_execute_error(const std::string_view &reason);
     ///Send empty result (same as send_result("");
     void send_empty_result();
-    ///Send information
-    /**
-     * Information frame contains additional information about processing the request.
-     * The request is not considered as finished
-     *
-     * @param text content of frame
-     */
-    void send_info(const std::string_view &text);
 
     ///Retrieve data of the request
-    const std::string &get_data() const;
+    std::string_view get_data() const;
+
+    std::weak_ptr<Peer> get_peer() const {
+        return _node;
+    }
+
+    ///Retrieves pointer to peer
+    /** If the peer is no longer available, the exception is thrown.
+     * @return
+     */
+    PPeer lock_peer() const {
+        auto peer = _node.lock();
+        if (peer) return peer;
+        throw std::runtime_error("Peer no longer available");
+    }
+
+    std::string_view get_id() const {
+        return _id;
+    }
+
+    std::string_view get_method_name() const {
+        return _method_name;
+    }
+
+    bool is_response_sent() const {
+        return _response_sent;
+    }
 
 
 protected:
 
+
     ///shared pointer to owner's node
     std::weak_ptr<Peer> _node;
-    ///id
-    std::string _id;
-    ///contains name of method
-    std::string _method_name;
-    ///Contains arguments
-    std::string _args;
     ///
     bool _response_sent;
+    ///store all string data here - to easy move the request
+    std::vector<char> _string_data;
+    ///id
+    std::string_view _id;
+    ///contains name of method
+    std::string_view _method_name;
+    ///Contains arguments
+    std::string_view _args;
 };
 
 
@@ -104,35 +118,23 @@ public:
     enum class Type {
         ///response contains a valid result
         result,
-        ///response contains request, which must be responsed to continue
-        request,
         ///response contains exception thrown from method
         exception,
         ///response contains reason, why method cannot be executed
         execute_error,
         ///response is empty, request was not processed because peer is disconnected
         disconnected,
-        ///response is only information, not actual response. The request continues in processing
-        information,
 
     };
 
     Response(Type type, const std::string_view &data)
         :_t(type),_d(data) {}
 
-    Response(const std::string_view &data, std::unique_ptr<Request> &&req)
-        :_t(Type::request),_d(data),_req(std::move(req)) {}
-
     Response(Response &&) = default;
     Response(const Response &) = delete;
 
     const std::string &get_data() const {
         return _d;
-    }
-
-    ///Retrieve the request to be replied
-    Request &get_request() {
-        return *_req;
     }
 
     ///Retrieve exception code and message
@@ -149,8 +151,6 @@ public:
     bool is_exception() const {return _t == Type::exception;}
     bool is_execute_error() const {return _t == Type::execute_error;}
     bool is_disconnected() const {return _t == Type::disconnected;}
-    bool is_request() const {return _t == Type::request;}
-    bool is_information() const {return _t == Type::information;}
 protected:
     Type _t;
     std::string _d;

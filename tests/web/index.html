@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>UMQ demo</title>
+</head>
+<body>
+<script type="module" src="./umq.js"></script>
+<script type="module">
+import * as UMQ from "./umq.js"
+window.UMQ = UMQ
+</script>
+<script type="text/javascript" defer="defer">
+var peer;
+setTimeout(()=>{
+	var loc = window.location, new_uri;
+	if (loc.protocol === "https:") {
+	    new_uri = "wss:";
+	} else {
+	    new_uri = "ws:";
+	}
+	new_uri += "//" + loc.host;
+	new_uri += loc.pathname + "./ws";
+	
+	peer = new window.UMQ.Peer(new_uri);
+	peer.init().then(()=>console.log("connected (peer)"),e=>console.error(e));
+	peer.wait_close().then(()=>console.log("Peer disconnected"), e=>console.error("Peer error",e));
+},500);
+</script>
+</body>
+</html>

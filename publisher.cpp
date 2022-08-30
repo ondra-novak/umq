@@ -6,7 +6,7 @@ Publisher::~Publisher() {
 	reset();
 }
 
-std::size_t Publisher::subscribe(TopicUpdateCallback &cb) {
+std::size_t Publisher::subscribe(TopicUpdateCallback &&cb) {
 	std::unique_lock _(_mx);
 	std::size_t id = ++idcnt;
 	_subs.push_back({
