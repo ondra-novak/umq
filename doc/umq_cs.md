@@ -102,7 +102,7 @@ Druhá strana může odpovědět zprávami **Result (R)**, **Exception (E)** neb
 ```
 R<id>\b<result data>
 E<id>\n<error msg>
-?<id>\n<error msg>
+!<id>\n<error msg>
 ```
 (samozřejmě druhá straná posílá pouze jednu z uvedených zpráv)
 
@@ -151,7 +151,7 @@ Strana která přijme tuto zprávu najde registrovaný callback pod danným `<id
 ```
 R<id>\b<result data>
 E<id>\n<error msg>
-?<id>\n<error msg>
+!<id>\n<error msg>
 ```
 (samozřejmě druhá straná posílá pouze jednu z uvedených zpráv)
 
