@@ -140,12 +140,14 @@ Z<id>
 
 Callback je ad-hod vytvořené volání metody aka request-response. Nejčastěji se callback používá pro volání opačným směrem. Pokud jedna strana nabízí služby ve formě RPC a druhá strana je vyvolává, pak callback je opačné volání kdy strana která nabízí služby chce zaslat request na stranu, která služby vyvolává. Avšak není to povinností to takto používat
 
-Callback je třeba registrovat a přiřadit mu `<id>` - následně se toto `<id>` předává protistraně, která následně použije toto ID k volání callbacku
+Callback je třeba registrovat a přiřadit mu `<cb_id>` - následně se toto `<cb_id>` předává protistraně, která následně použije toto ID k volání callbacku
 
 ```
-C<id>\n<data>
+C<id>\n<cb_id>\n<data>
 ```
-Strana která přijme tuto zprávu najde registrovaný callback pod danným `<id>` a ten zavolá, předá mu data. Callback pak musí vygenerovat zprávu **R**, **E** nebo **?** jako u zprávy **Method call (M)**
+**Poznámka:** Položka `<id>` v tomto případě je volena volajícím, stejně jako v případě volání metody **M**. Toto *id* následně identifikuje odpověď.
+
+Strana která přijme tuto zprávu najde registrovaný callback pod danným `<cb_id>` a ten zavolá, předá mu data. Callback pak musí vygenerovat zprávu **R**, **E** nebo **!** jako u zprávy **Method call (M)**
 
 
 ```
@@ -159,7 +161,7 @@ E<id>\n<error msg>
 **E exception** - callback byl vykonán a skončil výjimkou
 **! execution error** - chyba nastala před exekucí callbacku, tedy callback nebyl vyvolán
 
-Callback lze zavolat pouze jednou, po vyvolání se dané `<id>` zneplatní a nelze jej zavolat znovy. Pro řetězové volání callbacků musí po každém zavolání volaná strana registrovat nový callback a předat nové `<id>`
+Callback lze zavolat pouze jednou, po vyvolání se dané `<cb_id>` zneplatní a nelze jej zavolat znovy. Pro řetězové volání callbacků musí po každém zavolání volaná strana registrovat nový callback a předat nové `<cb_id>`
 
 Příklad
 
@@ -167,27 +169,37 @@ Příklad
 peer1: M<id1>\n<method>\n<data ... <id2> ....>
 peer2: R<id1>\n<data>
 
-peer2: C<id2>\n<data>
-peer1: R<id2>\n<data>
+peer2: C<id3>\n<id2>\n<data>
+peer1: R<id3>\n<data>
 ```
 
-**Poznámka**: Při volbě `<id>` je třeba dbát na to, že se toto `<id>` sdílí s `<id>` pro volání metod. Proto je vhodné pro ID volání metod zvolit jiný systém genrování než pro callbacky. Ta ID měla být unikátní. Nicméně je třeba si uvědomit, že `<id>` callbacku volí druhá strana spojení, než strana, která následně může narazit na problém unikátnosti IDček. 
 
-Doporučuje se tedy prefixovat ID. MethodCall "mXXX", Callback "cXXX"
+Callbacky lze používat k implementaci patternu **push-pull**
 
 ```
-peer1: Mm01\n<method>\n<data ... c01 ....>
-peer2: Rm01\n<data>
+peer1: M<id1>
+       ReadyToWork
+       My ID is <id2>
 
-peer2: Cc01\n<data>
-peer1: Rc01\n<data>
+peer2: R<id1>
+       Accepted
+
+peer2: C<id3>
+       <id2>
+       There is some work
+
+peer1: R<id3>
+       Done, there goes a result
+       
 ```
+      
+
 
 ## Proměnné kontextu spojení
 
 Obě strany mohou definovat libovolnou proměnnou a přiřadit jí hodnotu. Ta se pak stává součástí kontextu spojení. Kontext spojení existuje dokud není spojení uzavřeno (tím dojde ke smazání proměnných).
 
-Proměnné mohou být použity například nastavení identifikačních tokenů. Není tedy nutné implementovat metody zajišťující nějakou formu autentifikace nebo autorizace, jednoduše jedna strana nastaví domluvenou proměnnou na očekávanou hodnotu a druhá strana si ji může zkontrolovat.
+Proměnné mohou být použity například nastavení identifikačních tokenů. Není tedy nutné implementovat metody zajišťující nějakou formu autentifikace nebo autorizace, jednoduše jedna strana nastaví domluvenou proměnnou na očekávanou hodnotu a druhá strana si ji může kdykoliv později zkontrolovat, přičemž dotaz na proměnnou je instantní, jelikož se provádí lokálně.
 
 Název proměnné je identifikátor složený z libovolných znaků s kódem 32 výše. V názvu proměnné se tedy nesmí objevit řídící znaky (0-31). Jméno proměnné se u zprávy uvádí za typem zprávy, oddělovače je znak nové řádky
 
@@ -342,6 +354,13 @@ Dokumentace vždy začíná písmenem D (tím se liší od seznamů) následovan
 ```
 ?<id>
 <method_name>
+```
+
+### A - Attachment
+
+```
+A<id>
+<associated_message>
 ```
 
 ### C - Callback call
