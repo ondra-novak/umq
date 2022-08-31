@@ -1,6 +1,7 @@
 #include "peer.h"
 
 #include <shared/trailer.h>
+#include <sstream>
 namespace umq {
 
 
@@ -173,7 +174,7 @@ bool Peer::on_method_call(const std::string_view &id, const std::string_view &me
         std::string strm(method);
         const MethodCall *m = mlk->find_method(strm);
         if (m) {
-            (*m)(Request(weak_from_this(),id,strm,args));
+            (*m)(Request(weak_from_this(),id,strm,args, false));
             return true;
         } else {
             return false;
@@ -317,7 +318,7 @@ bool Peer::on_callback(const std::string_view &id, const std::string_view &name,
         auto cb = std::move(iter->second);
         _cb_map.erase(iter);
         _.unlock();
-        cb(Request(weak_from_this(), id, name, args));
+        cb(Request(weak_from_this(), id, name, args, false));
         return true;
     } else {
         return false;
@@ -447,6 +448,15 @@ void Peer::parse_message(const MessageRef &msg) {
                         try {
                           if (!on_callback(id, name, data)) {
                               send_execute_error(id, PeerError::callbackIsNotRegistered);
+                          }
+                        } catch (const std::exception &e) {
+                          send_exception(id, PeerError::unhandledException, e.what());
+                        }
+                        break;
+                    case PeerMsgType::discover:
+                        try {
+                          if (!on_discover(id, data)) {
+                              send_exception(id, PeerError::methodNotFound, error_to_string(PeerError::methodNotFound));
                           }
                         } catch (const std::exception &e) {
                           send_exception(id, PeerError::unhandledException, e.what());
@@ -772,6 +782,85 @@ void Peer::Listener::on_close() {
 void Peer::Listener::on_message(const umq::MessageRef &msg) {
     _owner.parse_message(msg);
 
+}
+
+void Peer::send_discover(const std::string_view &id, const std::string_view &method_name) {
+    send_message(PreparedMessage(PeerMsgType::discover, id, {method_name}));
+}
+
+
+
+bool Peer::on_discover(const std::string_view &id, const std::string_view &method_name) {
+    if (_methods != nullptr) {
+        auto mlk = _methods.lock_shared();
+        if (method_name.empty()) {
+            std::ostringstream buff;
+            for (const auto &x: mlk->methods) {
+                buff << "M" << x.first << "\n";
+            }
+            for (const auto &x: mlk->proxies) {
+                buff << "R" << x.first << "\n";
+            }
+            send_result(id, buff.str());
+            return true;
+        } else {
+            std::string strm(method_name);
+            const std::string *doc = mlk->find_doc(strm);
+            if (doc) {
+                send_result(id, "D"+*doc);
+                return true;
+            } else {
+                const MethodCall *m = mlk->find_method(strm);
+                if (m) {
+                    (*m)(Request(weak_from_this(),id,strm,"", true));
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+        }
+    } else {
+        send_result(id, "");
+    }
+
+}
+
+void Peer::discover(const std::string_view &query, DiscoverCallback  &&cb) {
+    std::unique_lock _(_lock);
+    if (!is_connected()) {
+        DiscoverResponse r;
+        r.error="Disconnected";
+        cb(r);
+        return;
+    }
+    int id = _call_id++;
+    std::string idstr = std::to_string(id);
+    _call_map[idstr] = [cb = std::move(cb)](Response &&resp) {
+        DiscoverResponse r;
+        if (resp.is_result()) {
+            auto txt = resp.get_data();
+            while (!txt.empty())  {
+                if (txt[0] == 'D') {
+                    r.doc = txt.substr(1);
+                    break;
+                }
+                else if (txt[0] != '\n') {
+                    auto line = userver::splitAt("\n", txt);
+                    switch(line[0]) {
+                        case 'M': r.methods.push_back(line.substr(1)); break;
+                        case 'R': r.routes.push_back(line.substr(1)); break;
+                        default: break;
+                    }
+                } else {
+                    txt = txt.substr(1);
+                }
+            }
+        } else {
+            r.error = resp.get_data();
+        }
+        cb(r);
+    };
+    send_discover(idstr, query);
 }
 
 }

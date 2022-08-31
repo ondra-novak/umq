@@ -40,10 +40,13 @@ UMQ rámec má jednoduchou strkturu
 * **identifier** - identifikátor jeho význam záleží na typu zprávy. Typicky identifikuje komunikační kanál, avšak může být využit jinak u zpráv, které nejsou součástí komunikačních kanálů. Identifikátor je libovolný UTF-8 string, nesmí být prázdný, a nesmí obsahovat znak \n (new line), protože to je oddělovač
 * **payload** - obsah zprávy, může být vynechán, pak není potřeba uvádět ani oddělovač.
 
+**Poznámka**: Popis UMQ rámce není kompletní, rozšíření rámce - viz **attachment**
+
 ## Typy zpráv
 
 * **!** - Execution error
-* **?** - Method help
+* **?** - Method discover
+* **A** - Attachment
 * **C** - Callback call
 * **E** - Exception
 * **H** - Hello message
@@ -213,6 +216,39 @@ Ke smazání proměnné se používá zpráva **X**.
 Xtoken
 ```
 
+## Attachmenty
+
+Attachment představuje binární obsah propojený z danou zprávou. Je to jediný způsob, jak předávat binární obsah zkrze textové zprávy.
+
+Binární obsah se přenáší pomocí binárního rámce. Binární rámce nemají žádnou identifikaci. V rámci spojení jsou číslované počínaje indexem 0 (tedy první binární rámec má index 0, další 1, atd)
+
+Attachment není celá zpráva, jedná se o prefix existující zprávy - rozšiřuje tedy protokol o možnost přidat ke zprávě attachment. Součástí zprávy přitom může být víc attachmentů,
+a jejich seznam se uvádí před samotnou zprávou
+
+```
+A<id1>
+A<id2>
+A<id3>
+...
+<typ><id>
+<data>
+```
+
+Příklad - zavolání metody s binárním obsahem. Příklad může představovat jednoduchý upload
+binárního obsahu jako soubor `obr.jpg`. Samotný binární obsah může být poslán před zprávou nebo i za zprávou, nicméně musí to být 8. binární blob ve streamu - je třeba si zajistit, aby odesílatel neumožnil přenos jiného blobu.
+
+```
+A7
+M123
+upload
+obr.jpg
+```
+
+Velikost attachmentu není nijak omezena, vše záleží na konkrétní platformě. Na serverech však může existovat omezení na objem dopředu poslaných a nezpracovaných binárních rámců. Pokud je tento limit překročen, může server ukončit spojení. Vlastní binární rámce lze
+tedy posílat i po odeslání zprávy z attaachmentem s tím, že druhá strana během zpracování zprávy bude čekat na přijetí rámce. Typicky je to realizováno jako async operace
+
+
+
 ## Routování
 
 Protokol neřeší routování zpráv přímo, pouze se jedná o sadu doporučení. Adresace zpráv zde probíhá víceméně pouze zkrze názvy metod. 
@@ -229,7 +265,7 @@ Stock:listTrades
 
 Typicky serverové peery mohou volání metody přeposílat na další peery, které je zpracují. Z výše uvedeného například `Account:getBalance` zpracovává router pro `Account`, který osloví patříčného peera, s voláním metody `getBalance`.
 
-## Nápověda '?'
+## Discover '?'
 
 Zpráva '?' slouží k dotazování informací o systému, ke kterému je peer připojen. Nejčastěji k listování jednotlivých služeb, které protějšek nabízí. Používá se podobně jako 
 zpráva **M**
@@ -301,7 +337,7 @@ Dokumentace vždy začíná písmenem D (tím se liší od seznamů) následovan
 <code> <message>
 ```
 
-### ? - Method help
+### ? - Method discover
 
 ```
 ?<id>

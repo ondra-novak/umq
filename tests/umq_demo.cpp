@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
     auto methods = umq::PMethodList::make();
     {
         auto m = methods.lock();
-        m->proxies.emplace("echo.",[&](umq::Request &&req) {
+        m->route("echo:") >> [&](umq::Request &&req) {
            umq::PPeer peer = req.lock_peer();
            auto name = req.get_method_name();
            auto subname = name.substr(5);
@@ -44,8 +44,8 @@ int main(int argc, char **argv) {
                     req.send_execute_error(resp.get_data());
                 }
            });
-        });
-        m->proxies.emplace("callback.",[&](umq::Request &&req) {
+        };
+        m->route("callback:") >> [&](umq::Request &&req) {
            umq::PPeer peer = req.lock_peer();
            auto name = req.get_method_name();
            auto subname = name.substr(9);
@@ -59,43 +59,54 @@ int main(int argc, char **argv) {
                     req.send_execute_error(resp.get_data());
                 }
            });
-        });
+        };
 
-        m->methods.emplace("sub_counter", [&](umq::Request &&req) {
-           if (req.get_data().empty()) {
-               req.send_exception(400, "Topic is not specified defined");
-           } else {
-               pub_counter.subscribe(req.lock_peer()->start_publish(req.get_data()));
-           }
-        });
+        m->method("sub_counter")
+           << "Subscribe to example counter. This counter generates topic update "
+              "every 1 second. Argument: ID of topic" >>
+                [&](umq::Request &&req) {
+                   if (req.get_data().empty()) {
+                       req.send_exception(400, "Topic is not specified");
+                   } else {
+                       pub_counter.subscribe(req.lock_peer()->start_publish(req.get_data()));
+                   }
+                };
 
-        m->methods.emplace("sub_chat", [&](umq::Request &&req) {
-            if (req.get_data().empty()) {
-                req.send_exception(400, "Topic is not specified defined");
-            } else {
-                pub_chat.subscribe(req.lock_peer()->start_publish(req.get_data()));
-            }
-        });
-        m->methods.emplace("send_chat", [&](umq::Request &&req) {
-            auto peer = req.lock_peer();
-            auto name = peer->get_peer_variable("name");
-            if (name.has_value()) {
-                std::string msg(*name);
-                msg.append(": ").append(req.get_data());
-                pub_chat.publish(msg);
-            } else{
-                req.send_exception(401, "Variable 'name' is not set");
-            }
-        });
+        m->method("sub_chat")
+                << "Subscribe to local chat. Argyment: ID of topic." >>
+                    [&](umq::Request &&req) {
+                        if (req.get_data().empty()) {
+                            req.send_exception(400, "Topic is not specified ");
+                        } else {
+                            pub_chat.subscribe(req.lock_peer()->start_publish(req.get_data()));
+                        }
+                    };
 
-        m->methods.emplace("set_me_var",[&](umq::Request &&req) {
-            auto peer = req.get_peer().lock();
-            if (peer) {
-                auto dt = req.get_data();
-                auto var = userver::splitAt("=", dt);
-                peer->set_variable(var, dt);
-            }
-        });
+        m->method("send_chat")
+                << "Send a message to chat channel." >>
+                    [&](umq::Request &&req) {
+                        auto peer = req.lock_peer();
+                        auto name = peer->get_peer_variable("name");
+                        if (name.has_value()) {
+                            std::string msg(*name);
+                            msg.append(": ").append(req.get_data());
+                            pub_chat.publish(msg);
+                        } else{
+                            req.send_exception(401, "Variable 'name' is not set");
+                        }
+                    };
+
+        m->method("set_var")
+               << "Sets local variable of this connection which appears as remote "
+                  "variable at the peer. Argument: var=value" >>
+                        [&](umq::Request &&req) {
+                            auto peer = req.get_peer().lock();
+                            if (peer) {
+                                auto dt = req.get_data();
+                                auto var = userver::splitAt("=", dt);
+                                peer->set_variable(var, dt);
+                            }
+                        };
 
     }
 

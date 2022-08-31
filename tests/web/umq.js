@@ -16,7 +16,7 @@ export const PeerError = {
 
 export const PeerMsgType =  {
     execution_error : '!',
-    help : '?',
+    discover : '?',
     callback : 'C',
     exception : 'E',
     hello : 'H',
@@ -173,22 +173,39 @@ export class Peer {
             return false;
         }
     }
-    
-    call(method, args) {
-        return new Promise((ok, err)=>{
-            if (this.#connected) {
-                
-                const id = this.#req_next_id++;
-                const reqid = id.toString();
-                
-                this.#requests[reqid] = {ok:ok,err:err};
-                this.#send_method_call(reqid, method, args);
-            } else {
-                err(Peer.disconnect_exception());
-            }
-        });
 
+    ///Discover the other peer
+    /**
+    @param query discover query (can be empty)    
+     */    
+    async discover(query) {
+        const x = await this.#create_request(id => {
+            this.#send_discover(id, query || "");
+        });
+        if (x.substr(0, 1) == "D") {
+            return x.substr(1);
+        } else {
+            let res = {};
+            let list = x.split("\n");
+            res.methods = list.filter(x_1 => x_1.substr(0, 1) == 'M').map(x_2 => x_2.substr(1));
+            res.routes = list.filter(x_3 => x_3.substr(0, 1) == 'R').map(x_4 => x_4.substr(1));
+            return res;
+        }
     }
+    
+   
+    async call(method, args) {
+        return await this.#create_request(id=>{
+            this.#send_method_call(id, method, args || "");
+        });
+    }
+
+    async call_callback(name, args) {
+        return await this.#create_request(id=>{
+            this.#send_callback(id, name, args || "");
+        });
+    }
+
     
     ///Register callback
     /**
@@ -206,18 +223,6 @@ export class Peer {
         delete this.#callbacks[id]
     }
     
-    call_callback(name, args) {
-        return new Promise((ok, err)=>{
-            if (this.#connected) {
-               const id = this.#req_next_id++;
-               const reqid = id.toString();
-               this.#requests[id] = {ok:ok,err:err};
-               this.#send_callback(id, name, args); 
-            } else {
-                err(Peer.disconnect_exception());
-            }
-        });
-    }
     
     
     ///set and object with methods
@@ -229,6 +234,21 @@ export class Peer {
     ///variables shared with peer  (you set the variables and peer can read them)
     vars = {}
      
+    #create_request(send_fn) {
+        return new Promise((ok, err)=>{
+            if (this.#connected) {
+                
+                const id = this.#req_next_id++;
+                const reqid = id.toString();
+                
+                this.#requests[reqid] = {ok:ok,err:err};
+                send_fn(reqid);                
+            } else {
+                err(Peer.disconnect_exception());
+            }
+            
+        })       
+    }
                
            
     #receive_msg(msg) {
@@ -263,6 +283,9 @@ export class Peer {
                           break;
                 case PeerMsgType.execution_error: 
                           this.#on_execute_error(id, data);
+                          break;
+                case PeerMsgType.discover: 
+                          this.#on_discover(id, data);
                           break;
                 case PeerMsgType.topic_update: 
                           this.#on_topic_update(id, data);
@@ -376,6 +399,20 @@ export class Peer {
     #on_var_unset(id) {
         delete this.peer_vars[id];
     }
+    #on_discover(id,query) {
+        if (!query) {
+            var res = "";
+            for (var i in this.methods) {
+                res = res + "M"+i+"\n";
+            }    
+            this.#send_result(id, res);
+        } else if (this.methods[query]) {
+            var doc = this.methods[query].doc;
+            this.#send_result(id, doc);
+        } else {
+            this.#send_exception(id, PeerError.methodNotFound, Peer.error_to_string(PeerError.methodNotFound));
+        }
+    }
     
     #send_unsubscribe(id) {
         this.#ws.send(PeerMsgType.unsubscribe+id);
@@ -390,6 +427,10 @@ export class Peer {
     
     #send_execute_error(id, errcode) {
         this.#ws.send(PeerMsgType.execution_error+id+"\n"+errcode+" "+Peer.error_to_string(errcode));
+    }
+    
+    #send_discover(id, query) {
+        this.#ws.send(PeerMsgType.discover+id+"\n"+query);
     }
     
     #send_exception(id, arg1, arg2) {

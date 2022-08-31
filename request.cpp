@@ -3,10 +3,14 @@
 #include "peer.h"
 namespace umq {
 
+
 Request::Request(const PWkPeer &node, const std::string_view &id,
-		const std::string_view &method_name, const std::string_view &args)
+		const std::string_view &method_name, const std::string_view &args,
+		bool discover_request)
 :_node(node)
-,_response_sent(false){
+,_response_sent(false)
+,_is_discover_request(discover_request)
+{
     _string_data.reserve(id.size()+method_name.size()+args.size()+3);
     _string_data.insert(_string_data.end(), id.begin(), id.end());
     _string_data.push_back(0);

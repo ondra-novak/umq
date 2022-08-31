@@ -26,12 +26,17 @@ class Request;
 
 using ResponseCallback = ondra_shared::Callback<void(Response &&)>;
 
+
+
 class Request {
 public:
+
     Request(const PWkPeer &node,
             const std::string_view &id,
             const std::string_view &method_name,
-            const std::string_view &data);
+            const std::string_view &data,
+            bool discover_request);
+
 
     ~Request();
 
@@ -94,6 +99,18 @@ public:
     }
 
 
+    ///This is discover request
+    /** This request was created as reaction to discover request message.
+     * The caller expects the proxy will ask for methods of the peer which is proxied by
+     * this proxy. Methods should never get such a request
+     *
+     * @retval true this is discover request.
+     * @retval false this is normal request
+     */
+    bool is_discover_request() const {
+        return _is_discover_request;
+    }
+
 protected:
 
 
@@ -101,6 +118,8 @@ protected:
     std::weak_ptr<Peer> _node;
     ///
     bool _response_sent;
+
+    bool _is_discover_request = false;
     ///store all string data here - to easy move the request
     std::vector<char> _string_data;
     ///id
