@@ -27,22 +27,64 @@ class Request;
 using ResponseCallback = ondra_shared::Callback<void(Response &&)>;
 
 
+class RequestBase {
+public:
+    RequestBase (const PWkPeer &peer, const std::string_view &id, const std::string_view &method_name, std::size_t extra);
 
-class Request {
+    RequestBase(RequestBase &&other);
+    
+    RequestBase(const RequestBase &other) = delete;
+    RequestBase &operator=(const RequestBase &other) = delete;
+    RequestBase &operator=(RequestBase &&other) = delete;
+    
+    ///Determines, whether response has been already sent
+    bool is_response_sent() const {
+        return _response_sent;
+    }
+    
+    std::weak_ptr<Peer> get_peer() const {
+        return _peer;
+    }
+
+    ///Retrieves pointer to peer
+    /** If the peer is no longer available, the exception is thrown.
+     * @return
+     */
+    PPeer lock_peer() const {
+        auto peer = _peer.lock();
+        if (peer) return peer;
+        throw std::runtime_error("Peer no longer available");
+    }
+    
+    std::string_view get_id() const {
+        return _id;
+    }
+    std::string_view get_method_name() const {
+        return _method_name;
+    }
+
+
+protected:
+    PWkPeer _peer;
+    std::vector<char> _text_data;
+    std::string_view _id;
+    std::string_view _method_name;    
+    bool _response_sent;
+    
+};
+
+class Request: public RequestBase {
 public:
 
-    Request(const PWkPeer &node,
+    Request(const PWkPeer &peer,
             const std::string_view &id,
             const std::string_view &method_name,
-            const std::string_view &data,
-            bool discover_request);
+            const std::string_view &data);
 
-
+    Request(Request &&) = default;
+    
     ~Request();
 
-    Request (const Request &req) = delete;
-    Request (Request &&req);
-    Request &operator=(const Request &req) = delete;
 
     ///Send result and finish the request
     void send_result(const std::string_view &val) ;
@@ -72,62 +114,11 @@ public:
     ///Retrieve data of the request
     std::string_view get_data() const;
 
-    std::weak_ptr<Peer> get_peer() const {
-        return _node;
-    }
 
-    ///Retrieves pointer to peer
-    /** If the peer is no longer available, the exception is thrown.
-     * @return
-     */
-    PPeer lock_peer() const {
-        auto peer = _node.lock();
-        if (peer) return peer;
-        throw std::runtime_error("Peer no longer available");
-    }
-
-    std::string_view get_id() const {
-        return _id;
-    }
-
-    std::string_view get_method_name() const {
-        return _method_name;
-    }
-
-    bool is_response_sent() const {
-        return _response_sent;
-    }
-
-
-    ///This is discover request
-    /** This request was created as reaction to discover request message.
-     * The caller expects the proxy will ask for methods of the peer which is proxied by
-     * this proxy. Methods should never get such a request
-     *
-     * @retval true this is discover request.
-     * @retval false this is normal request
-     */
-    bool is_discover_request() const {
-        return _is_discover_request;
-    }
 
 protected:
-
-
-    ///shared pointer to owner's node
-    std::weak_ptr<Peer> _node;
-    ///
-    bool _response_sent;
-
-    bool _is_discover_request = false;
-    ///store all string data here - to easy move the request
-    std::vector<char> _string_data;
-    ///id
-    std::string_view _id;
-    ///contains name of method
-    std::string_view _method_name;
-    ///Contains arguments
     std::string_view _args;
+
 };
 
 
@@ -176,15 +167,53 @@ protected:
     std::unique_ptr<Request> _req;
 };
 
+///Response on discover request
+struct DiscoverResponse {
+    ///list of methods 
+    std::vector<std::string> methods;
+    ///list of routes
+    std::vector<std::string> routes;
+    ///documentation of the method - if queried a method
+    std::string doc;
+    ///error string which is set when error happened
+    std::string error;
+    ///doc is valid (ignore methods and routes)
+    bool isdoc = false;
+};
+
+///Discover request for a route/proxy
+/** Discover request is much simplier. 
+ * 
+ */
+class DiscoverRequest: public RequestBase {
+public:
+    
+    ///Callback function
+    using Callback = ondra_shared::Callback<void(const DiscoverResponse &resp)>;
+    
+    ///Constructor
+    /**
+     * @param peer associated peer - can be undefined
+     * @param cb callback
+     * @param method_name - whole method name, including router's prefix ("Router:method")
+     */
+    DiscoverRequest(const PWkPeer &peer, Callback &&cb, const std::string_view &id, const std::string_view &method_name);
+    DiscoverRequest(DiscoverRequest &&other) = default;
+    ~DiscoverRequest();
+    
+    DiscoverRequest(const DiscoverRequest &other) = delete;
+    DiscoverRequest &operator=(DiscoverRequest &&) = delete;
+    DiscoverRequest &operator=(const DiscoverRequest &) = delete;
+
+    ///Send response
+    void send(const DiscoverResponse &resp);
 
 
+protected:
+    Callback _cb;
+    
 
-
-
-
-
-
-
+};
 
 }
 

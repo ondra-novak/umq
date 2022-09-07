@@ -14,6 +14,7 @@ namespace umq {
 
 
 using MethodCall = ondra_shared::Callback<void(Request &&req)>;
+using DiscoverCall = ondra_shared::Callback<void(DiscoverRequest &&req)>;
 
 enum class EntryType {
     method,
@@ -31,6 +32,7 @@ class MethodList {
 public:
 
     using MethodDoc = std::pair<MethodCall, std::string>;
+    using RouterDoc = std::pair<MethodCall, DiscoverCall>;
 
     class MethodSetHelper {
     public:
@@ -57,13 +59,17 @@ public:
 
     class RouteSetHelper {
     public:
-        RouteSetHelper(MethodCall &ref): _ref(ref) {}
+        RouteSetHelper(RouterDoc &ref): _ref(ref) {}
         RouteSetHelper operator >> (MethodCall &&call) {
-            _ref  = std::move(call);
+            _ref.first  = std::move(call);
+            return RouteSetHelper(_ref);
+        }
+        RouteSetHelper operator << (DiscoverCall &&call) {
+            _ref.second = std::move(call);
             return RouteSetHelper(_ref);
         }
     protected:
-        MethodCall &_ref;
+        RouterDoc &_ref;
     };
 
 
@@ -92,7 +98,7 @@ public:
         auto iter2 = proxies.lower_bound(name);
         if (iter2 != proxies.end()) {
             if (name.compare(0,iter2->first.size(), iter2->first)==0) {
-                return &iter2->second;
+                return &iter2->second.first;
             }
         }
         return nullptr;
@@ -105,8 +111,22 @@ public:
 
     }
 
+    const DiscoverCall * find_route_discover(const std::string &name) const {
+        auto iter2 = proxies.lower_bound(name);
+        if (iter2 != proxies.end()) {
+            if (name.compare(0,iter2->first.size(), iter2->first)==0) {
+                if (iter2->second.second != nullptr) {
+                    return &iter2->second.second;
+                } else {
+                    return nullptr;
+                }
+            }
+        }
+        return nullptr;
+    }
+
     std::unordered_map<std::string, std::pair<MethodCall, std::string> > methods;
-    std::map<std::string, MethodCall, std::greater<std::string> > proxies;
+    std::map<std::string, RouterDoc, std::greater<std::string> > proxies;
 
 
 };

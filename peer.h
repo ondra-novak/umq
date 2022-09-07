@@ -12,6 +12,7 @@
 #include "message.h"
 #include "connection.h"
 #include "methodlist.h"
+#include "payload.h"
 #include <shared/callback.h>
 #include <deque>
 #include <map>
@@ -118,15 +119,6 @@ using SharedVariables = std::map<std::string, std::string, std::less<> >;
 using PeerVariables = std::map<std::string, std::any, std::less<> >;
 
 
-///Response on discover request
-struct DiscoverResponse {
-    ///list of methods and routes - if queried a route
-    std::vector<std::string> methods, routes;
-    ///documentation of the method - if queried a method
-    std::string doc;
-    ///error string which is set when error happened
-    std::string error;
-};
 
 using DiscoverCallback = ondra_shared::Callback<void(DiscoverResponse &)>;
 

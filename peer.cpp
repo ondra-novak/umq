@@ -174,7 +174,7 @@ bool Peer::on_method_call(const std::string_view &id, const std::string_view &me
         std::string strm(method);
         const MethodCall *m = mlk->find_method(strm);
         if (m) {
-            (*m)(Request(weak_from_this(),id,strm,args, false));
+            (*m)(Request(weak_from_this(),id,strm,args));
             return true;
         } else {
             return false;
@@ -318,7 +318,7 @@ bool Peer::on_callback(const std::string_view &id, const std::string_view &name,
         auto cb = std::move(iter->second);
         _cb_map.erase(iter);
         _.unlock();
-        cb(Request(weak_from_this(), id, name, args, false));
+        cb(Request(weak_from_this(), id, name, args));
         return true;
     } else {
         return false;
@@ -810,9 +810,29 @@ bool Peer::on_discover(const std::string_view &id, const std::string_view &metho
                 send_result(id, "D"+*doc);
                 return true;
             } else {
-                const MethodCall *m = mlk->find_method(strm);
+                const DiscoverCall *m = mlk->find_route_discover(strm);
                 if (m) {
-                    (*m)(Request(weak_from_this(),id,strm,"", true));
+                    (*m)(DiscoverRequest(weak_from_this(), [me=weak_from_this(), id = std::string(id)](const DiscoverResponse &resp){
+                        auto lkme = me.lock();
+                        if (lkme != nullptr) {
+                            if (!resp.error.empty()) {
+                                lkme->send_exception(id, resp.error);
+                            } else {
+                                std::ostringstream buff;
+                                if (!resp.isdoc) {
+                                    for (const auto &x: resp.methods) {
+                                        buff << "M" << x << "\n";
+                                    }
+                                    for (const auto &x: resp.routes) {
+                                        buff << "R" << x << "\n";
+                                    }                                
+                                } else {
+                                    buff << "D" << resp.doc;
+                                }
+                                lkme->send_result(id, buff.str());
+                            }
+                        }
+                    }, id, strm));                    
                     return true;
                 } else {
                     return false;
@@ -821,6 +841,7 @@ bool Peer::on_discover(const std::string_view &id, const std::string_view &metho
         }
     } else {
         send_result(id, "");
+        return true;
     }
 
 }
@@ -842,6 +863,7 @@ void Peer::discover(const std::string_view &query, DiscoverCallback  &&cb) {
             while (!txt.empty())  {
                 if (txt[0] == 'D') {
                     r.doc = txt.substr(1);
+                    r.isdoc = true;
                     break;
                 }
                 else if (txt[0] != '\n') {

@@ -30,7 +30,14 @@ int main(int argc, char **argv) {
     auto methods = umq::PMethodList::make();
     {
         auto m = methods.lock();
-        m->route("echo:") >> [&](umq::Request &&req) {
+        m->route("echo:") 
+            << [&](umq::DiscoverRequest &&req) {                
+                req.lock_peer()->discover(req.get_method_name().substr(5), 
+                        [req = std::move(req)](umq::DiscoverResponse &resp) mutable {
+                    req.send(resp);
+                });
+            } >> [&](umq::Request &&req) {
+                
            umq::PPeer peer = req.lock_peer();
            auto name = req.get_method_name();
            auto subname = name.substr(5);
@@ -73,7 +80,7 @@ int main(int argc, char **argv) {
                 };
 
         m->method("sub_chat")
-                << "Subscribe to local chat. Argyment: ID of topic." >>
+                << "Subscribe to local chat. Argument: ID of topic." >>
                     [&](umq::Request &&req) {
                         if (req.get_data().empty()) {
                             req.send_exception(400, "Topic is not specified ");
