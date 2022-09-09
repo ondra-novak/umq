@@ -13,6 +13,7 @@ add_library (umq
 				 peer.cpp
 				 publisher.cpp
 				 wsconnection.cpp
+				 payload.cpp
 			     request.cpp)
 
 add_subdirectory (tests)

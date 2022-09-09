@@ -349,6 +349,11 @@ Dokumentace vždy začíná písmenem D (tím se liší od seznamů) následovan
 <code> <message>
 ```
 
+Tato chyba informuje o tom, že došlo k chybě při hledání nebo routování volání. Volající
+má jistotu, že nedošlo k vyvolání metody - metoda nebyla nalezena, vyvolána, nebo nebyla
+nalezena cesta, nebo peer obsluhující dané volání není k dispozici
+
+
 ### ? - Method discover
 
 ```
@@ -356,11 +361,44 @@ Dokumentace vždy začíná písmenem D (tím se liší od seznamů) následovan
 <method_name>
 ```
 
+Tato zpráva je podobná jako volání metody 'M' s tím, že metodu nevolá, ale dotazuje se na její popis. Pokud není zadané jméno metody, pak jde o dotaz na seznam metod nabízeného protějším uzlem. Pokud je zadáno jméno trasy (route), pak jde o dotaz na seznam metod nabízené na zadané trase
+
+Odpověď příjde jako **R** nebo jako **E**. Odpověď pro **R** má předepsanný formát.
+
+Popis metody se vrací s prefixem **D**. Zbytek zprávy obsahuje popis
+
+```
+D<popis>\n<popis>\n<popis>
+```
+
+Seznamy jsou položky oddělené novým řádkem. Před názvem je prefix specifikující typ položky
+
+* **M** - metoda
+* **R** - trasa
+
+```
+Mmethod1
+Mmethod2
+Rroute1
+Rroute2
+```
+
 ### A - Attachment
 
 ```
 A<id>
 <associated_message>
+```
+
+Zpráva **A** není samostatnou zprávou, ale pouze prefixem, který se objevuje před zprávou. Přítomnost tohoto prefixu znamená, že součástí zprávy je binární obsah, který se posílá jako binární zpráva. Za písmenem **A** se uvádí číselné ID binární zprávy
+
+```
+A123
+Mxyz
+upload_file
+file.txt
+
+<binary content>
 ```
 
 ### C - Callback call
@@ -371,6 +409,10 @@ C<id>
 <arguments>
 ```
 
+Představuje volání callbacku. **<callback_id>** představuje dopředu známé dočasné ID. Toto ID lze použít k jednomu volání. Odesílatel musí zvolit náhodné **<id>** pod kterým pak přijde odpověď  **R**, **E**, nebo **!**
+
+Odpověď je **R** výsledek, **E** výjimka, **!** v případě, že **<callback_id>** není registrováno.
+
 ### E - Exception
 
 ```
@@ -378,12 +420,24 @@ E<id>
 <exception description>
 ```
 
+Zprává **E** má dvě podoby. Peer většinou posílá **E** bez `<id>`, pokud se jendá o chybu komunikace a téměř vždy odesílatel uzavírá spojení.
+
+Peer posílá **E** s `<id>` metody, která způsobila výjimku. Pak se jedná o výjimku spojenou s danou metodou. Spojení zůstává aktivní.
+
 ### H - Hello message
 
 ```
 H<version>
 <payload>
 ```
+
+Tato zpráva musí být zaslána klientem, který se připojil na server, před zahájením komunikace, kdy potom dojde ke zrušení těchto počítečních rolí.
+
+Klient posílá číslo nejvyšší verze, kterou podporuje. Server může verzi snížit ve své odpovědi **W**. Server může na tuto zprávu odpovědět **E** pokud nechce komunikovat
+
+Součástí zprávy může být aplikačně definovaný payload
+
+
 
 ### M - Method call
 
@@ -393,6 +447,8 @@ M<id>
 <arguments>
 ```
 
+Jedná se o volání metody **<method_name>**. Volající musí generovat unikátní **<id>**. Druhá strana odpovídá pomocí zprávy **R** nebo **E** nebo **!**
+
 ### R - Result
 
 ```
@@ -400,11 +456,19 @@ R<id>
 <result>
 ```
 
+Tato zpráva obsahuje výsledek některého volání, ať už metody **M**, callbacku **C** nebo discovery **?**. 
+
+
 ### S - Var set
 ```
 S<varname>
 <value>
 ```
+
+Zprávu posílá vždy ta strana, která potřebuje nastavit proměnnou v remote namespace protějška. Na zprávu neexistuje odpověď, vždy se předpokládá, že zpráva dorazila a nastavila danou proměnnou
+
+Peer většinou nesleduje změny danné proměnné, pouze se může dotazovat na proměnnou v okamžiku kdy to potřebuje. Pro sledování nějakého topicu se spíš hodí zpráva **T**
+
 
 ### T - Topic update
 
@@ -413,11 +477,19 @@ T<topic_id>
 <payload>
 ```
 
+Představuje aktualizaci nějakého topicu. **<id>** by si měl volit subscriber a oznamuje ho publisheru např pomocí zprávy **M**. Pod tímto id se pak posílají topic updates
+
 ### U - Unsubscribe
 
 ```
 U<topic_id>
 ```
+
+Ukončí daný topic ze strany subscribera. Publisher by měl přestat posílat **T**. 
+Běžně se ale stává, že po odeslání této zprávy dorazí ještě několik zpráv **T** než informace o odhlášení probublá publisherem až ke zdroji
+
+Kód peeru často eviduje seznam přijímaných topiců. Pokud je přijat topic, který není registrován, automaticky se odesílá zpráva **U**. 
+
 
 ### W - Welcome message
 
@@ -426,15 +498,23 @@ W<version>
 <payload>
 ```
 
+Odesílá server jako odpověď na zprávu **H**. Server zkontroluje navrženou verzi. Server navrhnout nižší verzi, pokud navrženou verzi nepodporuje. 
+
+Klient může na zprávu odpovědět **E** pokud odmítne navrženou verzi.
+
 ### X - Var unset
 
 ```
 X<varname>
 ```
 
+Posílá se ke smazání dané proměnné
+
 ### Z - Topic close
 
 ```
 Z<topic_id>
 ```
+
+Posílá publisher jako oznámení subscriberovi, že již žádná zpráva **T** k danému topicu již nepřijde. Subscriber zpravidla smaže registraci topicu, takže jakákoliv další zpráva se stejným topicem způsobí odpověď **U**
 

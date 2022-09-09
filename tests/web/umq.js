@@ -408,7 +408,7 @@ export class Peer {
             this.#send_result(id, res);
         } else if (this.methods[query]) {
             var doc = this.methods[query].doc;
-            this.#send_result(id, doc);
+            this.#send_result(id,"D"+doc);
         } else {
             this.#send_exception(id, PeerError.methodNotFound, Peer.error_to_string(PeerError.methodNotFound));
         }
