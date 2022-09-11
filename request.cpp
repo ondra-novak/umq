@@ -28,13 +28,14 @@ RequestBase::RequestBase(RequestBase &&other)
 
 
 Request::Request(const PWkPeer &node, const std::string_view &id,
-		const std::string_view &method_name, const std::string_view &args)
-:RequestBase(node, id, method_name, args.size()+1)
+		const std::string_view &method_name, const Payload &args)
+:RequestBase(node, id, method_name, args.length()+1)
+,_args(args)
 {
-    auto pos = _text_data.size();
-    std::copy(args.begin(), args.end(), std::back_inserter(_text_data));
-    _text_data.push_back(0);
-    this->_args = std::string_view(_text_data.data()+pos, args.size());
+	std::size_t p = _text_data.size();
+	std::copy(args.begin(), args.end(), std::back_inserter(_text_data));
+	_text_data.push_back(0);
+	_args = std::string_view(_text_data.data()+p, args.length());
 }
 
 Request::~Request() {
@@ -43,7 +44,7 @@ Request::~Request() {
 	}
 }
 
-void Request::send_result(const std::string_view &val) {
+void Request::send_result(const Payload &val) {
 	if (_response_sent) return;
 	PPeer nd = _peer.lock();
 	if (nd != nullptr) {
@@ -52,7 +53,7 @@ void Request::send_result(const std::string_view &val) {
 	_response_sent = true;
 }
 
-void Request::send_exception(const std::string_view &val) {
+void Request::send_exception(const Payload &val) {
 	if (_response_sent) return;
 	PPeer nd = _peer.lock();
 	if (nd != nullptr) {
@@ -65,11 +66,11 @@ void Request::send_exception(int code, const std::string_view &message) {
     auto msg = std::to_string(code);
     msg.push_back(' ');
     msg.append(message);
-	send_exception(msg);
+	send_exception(Payload(msg));
 }
 
 
-void Request::send_execute_error(const std::string_view &reason) {
+void Request::send_execute_error(const Payload &reason) {
 	if (_response_sent) return;
 	PPeer nd = _peer.lock();
 	if (nd != nullptr) {
@@ -83,13 +84,15 @@ void Request::send_empty_result() {
 	send_result(std::string_view());
 }
 
-std::string_view Request::get_data() const {
+const Payload &Request::get_data() const {
 	return _args;
 }
 
+
+
 std::pair<int, std::string_view> Response::get_exception() const {
     char *cont;
-    int code = std::strtol(_d.c_str(), &cont, 10);
+    int code = std::strtol(_d.data(), &cont, 10);
     std::string_view msg(cont);
     userver::trim(msg);
     return {code, msg};
@@ -115,6 +118,13 @@ DiscoverRequest::~DiscoverRequest() {
         DiscoverResponse resp;
         send(resp);
     }
+}
+
+Response::Response(Type type, const Payload &data)
+: _t(type)
+{
+	_text.reserve(data.length()+1);
+	std::copy(data.begin(), data.end(), std::back_inserter(_text));
 }
 
 }

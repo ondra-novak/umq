@@ -93,7 +93,7 @@ int main(int argc, char **argv) {
                 << "Send a message to chat channel." >>
                     [&](umq::Request &&req) {
                         auto peer = req.lock_peer();
-                        auto name = peer->get_peer_variable("name");
+                        auto name = peer->remote.get("name");
                         if (name.has_value()) {
                             std::string msg(*name);
                             msg.append(": ").append(req.get_data());
@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
                             if (peer) {
                                 auto dt = req.get_data();
                                 auto var = userver::splitAt("=", dt);
-                                peer->set_variable(var, dt);
+                                peer->local.set(var, std::string(dt));
                             }
                         };
 

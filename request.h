@@ -4,21 +4,18 @@
 #include <string_view>
 #include <shared/callback.h>
 #include <vector>
+#include "payload.h"
 
 namespace umq {
 
 class Peer;
 
+
 using PPeer = std::shared_ptr<Peer>;
 using PWkPeer = std::weak_ptr<Peer>;
 
 
-///Callback when topic update - but if data are 'undefined', then topic is closed
-/** @param data - data of topic
- * @retval true continue receive topic
- * @retval false stop receive topic (unsubscribe)
- */
-using TopicUpdateCallback = ondra_shared::Callback<bool(const std::string_view &data)>;
+using TopicUpdateCallback = ondra_shared::Callback<bool(const Payload &data)>;
 
 
 class Response;
@@ -79,7 +76,7 @@ public:
     Request(const PWkPeer &peer,
             const std::string_view &id,
             const std::string_view &method_name,
-            const std::string_view &data);
+            const Payload &data);
 
     Request(Request &&) = default;
     
@@ -87,12 +84,12 @@ public:
 
 
     ///Send result and finish the request
-    void send_result(const std::string_view &val) ;
+    void send_result(const Payload &val) ;
     ///Send exception and finish the request
     /**
      * @param val excetion data
      */
-    void send_exception(const std::string_view &val);
+    void send_exception(const Payload &val);
     ///Send exception and finish the request
     /**
      * @param code exception code
@@ -107,17 +104,17 @@ public:
      *
      * @param reason reason description
      */
-    void send_execute_error(const std::string_view &reason);
+    void send_execute_error(const Payload &reason);
     ///Send empty result (same as send_result("");
     void send_empty_result();
 
     ///Retrieve data of the request
-    std::string_view get_data() const;
+    const Payload &get_data() const;
 
 
 
 protected:
-    std::string_view _args;
+    Payload _args;
 
 };
 
@@ -137,15 +134,16 @@ public:
 
     };
 
-    Response(Type type, const std::string_view &data)
-        :_t(type),_d(data) {}
+    Response(Type type, const Payload &data);
 
     Response(Response &&) = default;
     Response(const Response &) = delete;
 
-    const std::string &get_data() const {
+    const Payload &get_data() const {
         return _d;
     }
+
+    const AttachList &get_attachments() const {return _d.attachments;}
 
     ///Retrieve exception code and message
     /**
@@ -163,8 +161,9 @@ public:
     bool is_disconnected() const {return _t == Type::disconnected;}
 protected:
     Type _t;
-    std::string _d;
-    std::unique_ptr<Request> _req;
+    std::vector<char> _text;
+    Payload _d;
+
 };
 
 ///Response on discover request

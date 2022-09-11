@@ -7,56 +7,71 @@
 
 #ifndef LIB_UMQ_PAYLOAD_H_qwiod43928rf4354543
 #define LIB_UMQ_PAYLOAD_H_qwiod43928rf4354543
-#include <optional>
-#include <string_view>
 #include <shared/async_future.h>
+#include <string_view>
+#include <string>
 #include <vector>
 
 namespace umq {
 
 
+///The future contains attachment- it is avalable when attachments are currently downloaded
+using AttachContent = ondra_shared::async_future<std::string>;
+using Attachment = std::shared_ptr<AttachContent>;
+using AttachList = std::vector<Attachment>;
 
 
-class Payload{
+
+template<typename T>
+class TypeWithAttachT: public T {
 public:
+	using T::T;
+	TypeWithAttachT(const T &other):T(other) {}
+	TypeWithAttachT(T &&other):T(std::move(other)) {}
+	TypeWithAttachT(const TypeWithAttachT &other) = default;
+	TypeWithAttachT(TypeWithAttachT &&other) = default;
+	TypeWithAttachT(const T &other, const AttachList &lst):T(other),attachments(lst) {}
 
-    using Attachment = std::shared_ptr<ondra_shared::async_future<std::string> >;
-    class Access {
-    public:
-        Access(const Attachment &a):_a(a) {}
-        template<typename Fn, typename = decltype(std::declval<Fn>()(std::declval<bool>(), std::declval<const std::string &>()))>
-        void operator>>(Fn &&fn) {
-            (*_a) >> [fn = std::forward<Fn>(fn)](const ondra_shared::async_future<std::string> &f) {
-                if (f.is_ready()) fn(true, *f);
-                else fn(false, std::string());
-            };
-        }
-    protected:
-        Attachment _a;
-    };
+	TypeWithAttachT &operator=(const T &msg) {
+		T::operator=(msg);
+		return *this;
+	}
+	TypeWithAttachT &operator=(T &&msg) {
+		T::operator=(std::move(msg));
+		return *this;
+	}
+	TypeWithAttachT &operator=(const TypeWithAttachT &msg) = default;
+	TypeWithAttachT &operator=(TypeWithAttachT &&msg) = default;
 
-    
-    Payload(const std::string_view &str);
-    Payload(const std::string_view &str, std::weak_ptr<BinaryPayload> bin);
-    
-    
-    std::string_view get_text() const;
-    operator std::string_view() const;
-    operator std::string() const;
+	template<typename X>
+	TypeWithAttachT(const TypeWithAttachT<X> &other)
+		:T(other),attachments(other.attachments) {}
+	template<typename X>
+	TypeWithAttachT &operator=(const TypeWithAttachT<X> &other) {
+		T::operator=(other);
+		attachments = other.attachments;
+		return *this;
+	}
 
-    bool has_attachments() const;
-    std::size_t attachment_count() const;
-    Access get_attachment(std::size_t idx) {
-        return Access(_attachments[idx]);
-    }
 
-protected:
-    std::string_view _text;
-    std::vector<Attachment> _attachments;
+
+	AttachList attachments;
 };
 
+///Payload is helper class, which acts as a string_view but can carry attachments
+/**
+ * Main part of every payload is ability to transfer binary attachments. There
+ * can be unilimited count of attachments. For large files, it is adviced to
+ * split one large file into serveral attachments.
+ *
+ * The attachments are declared as async_future. You can always send a message
+ * containing a payload without the data itself. You can supply the data later. The
+ * same is applied when Payload is received. These attachment can resolve
+ * later.
+ */
+using Payload = TypeWithAttachT<std::string_view>;
+
+using PayloadStr =  TypeWithAttachT<std::string>;
 
 }
-
-#endif /* LIB_UMQ_PAYLOAD_H_qwiod43928rf4354543 */
-
+#endif

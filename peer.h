@@ -14,13 +14,21 @@
 #include "methodlist.h"
 #include "payload.h"
 #include <shared/callback.h>
+#include <shared/svo_vector.h>
+#include <shared/toString.h>
+#include <algorithm>
 #include <deque>
 #include <map>
 #include <memory>
 #include <shared_mutex>
 #include <any>
+#include <queue>
 
 namespace umq {
+
+#ifndef UMQ_MESSAGE_BUILDER_STACK_ALLOC
+#define UMQ_MESSAGE_BUILDER_STACK_ALLOC 256
+#endif
 
 enum class PeerError {
     noError = 0,
@@ -56,6 +64,13 @@ enum class PeerMsgType: char {
     ///Discover request
     /** ?id params - discovers supported services of the peer (same as call) */
     discover = '?',
+
+	///Attachment error
+	/**#<error message> - counted as attachment, but contians an error
+	 */
+	attachmentError = '#',
+
+	attachment = 'A',
 
     ///Callback
     /** Cid args - request to callback method - response is R or E (or ?) */
@@ -103,10 +118,10 @@ enum class PeerMsgType: char {
 };
 
 
-///Called on server when hello request arrived, can return response. From this point, node is ready
-using HelloRequest = ondra_shared::Callback<std::string(const std::string_view)>;
 ///Called in client when welcome request arrived. From this point, node is ready
-using WelcomeResponse = ondra_shared::Callback<void(const std::string_view)>;
+using WelcomeResponse = ondra_shared::Callback<void(const Payload &)>;
+///Called on server when hello request arrived, can return response. From this point, node is ready
+using HelloRequest = ondra_shared::Callback<void(const Payload &, WelcomeResponse &&)>;
 ///Called to unsubscribe topic by subscriber
 using UnsubscribeRequest = ondra_shared::Callback<void()>;
 ///called when node disconnects, before it is destroyed
@@ -114,10 +129,11 @@ using DisconnectEvent = ondra_shared::Callback<void()>;
 
 using BinaryContentEvent = ondra_shared::Callback<void(bool valid, const std::string_view &content)>;
 
-using SharedVariables = std::map<std::string, std::string, std::less<> >;
+using SharedVariables = std::map<std::string, PayloadStr, std::less<> >;
 
 using PeerVariables = std::map<std::string, std::any, std::less<> >;
 
+template<typename T> struct NullCmp { bool operator()(const T &a, const T &b)const {return false;} };
 
 
 using DiscoverCallback = ondra_shared::Callback<void(DiscoverResponse &)>;
@@ -171,12 +187,12 @@ public:
     /**
      * The client is side, which created connection by connecting a server.
      * @param conn connection (created using connect)
-     * @param req request data sent with Hellow request.
+     * @param req request data sent with Hello request.
      * @param resp callback called when Welcome message arrives
      *
      * You can start use the node after Welcome arrives, never soon.
      */
-    void init_client(PConnection &&conn,const std::string_view &req,  WelcomeResponse &&resp);
+    void init_client(PConnection &&conn,const Payload &req,  WelcomeResponse &&resp);
 
 
     ///Discover services of the peer
@@ -194,7 +210,7 @@ public:
      * @param params parameters
      * @param result callback which handles result
      */
-    void call(const std::string_view &method, const std::string_view &params, ResponseCallback &&result);
+    void call(const std::string_view &method, const Payload &params, ResponseCallback &&result);
 
     ///Subscribes given topic
     /** Doesn't perform actual subscription, it only prepares
@@ -310,69 +326,6 @@ public:
      */
     void unsubscribe(const std::string_view &topic);
 
-    ///Get variable set by peer
-    /**
-     * Variables are set by the peer. They can be used to store
-     * peer state, authorization, JWT tokens, etc. These variables
-     * can be read by the other side using this function.
-     *
-     * Only peer can change the variable
-     *
-     * @param name name of the variable
-     * @return Value of the variable, if not exists, value is not set
-     */
-    std::optional<std::string_view> get_peer_variable(const std::string_view &name) const;
-
-    ///Get all peer variables
-    SharedVariables get_peer_variables() const;
-
-    ///Sets the variable
-    /**
-     * Sets a variable associated with the connection.
-     * The variable is visible to the peer.
-     *
-     * @param name name of the variable
-     * @param value content of variable
-     */
-    void set_variable(const std::string_view &name, const std::string_view &value);
-
-    ///Unsets the variable
-    bool unset_variable(const std::string_view &name);
-
-    ///Sets multiple variables
-    /**
-     * @param variables json-object contains multiple variables
-     * @param merge if true, current variables stays set, otherwise they are cleared
-     */
-    void set_variables(SharedVariables &&variables, bool merge = false);
-
-    ///Retrieves variable
-    /**
-     * Retrieves value of a variable set by the function set_variable
-     *
-     * @param name name of variable
-     * @return value content of variable
-     */
-    std::optional<std::string_view> get_variable(const std::string_view &name) const;
-
-    ///Retrieves all variables as single json-object
-    /**
-     * @return value content of variable
-     */
-    SharedVariables get_variables() const;
-
-    void set_local_variable(const std::string_view &name, const std::any &value);
-
-    void set_local_variable(const std::string_view &name, std::any &&value);
-
-    bool unset_local_variable(const std::string_view &name);
-
-    std::optional<std::any> get_local_variable(const std::string_view &name);
-
-    PeerVariables get_local_variables();
-
-    void swap_local_variables(PeerVariables &&vars);
-
 
     void set_hwm(std::size_t sz);
 
@@ -381,84 +334,96 @@ public:
     static std::size_t default_hwm;
 
 
-    ///Use to send binary message
-    /**
-     * If you need to send a binary message and give the peer the ID of that
-     * message, you need to create instance of this class.
-     *
-     * Then you can call get_id() to receive ID of the message. When your
-     * text message is send to the peer, you can call send() to send actual
-     * binary message
-     *
-     */
-    class BinaryMessage {
-    public:
-
-        ///Construct uninitialized instance
-        BinaryMessage() = default;
-        ///Construct and initialize instance ready to receive the binary message to send to the specified peer
-        /**
-         * @param peer peer
-         */
-        BinaryMessage(const PPeer &peer);
-
-        BinaryMessage(const PWkPeer &peer);
-
-        ///You can move the object
-        BinaryMessage(BinaryMessage &&other);
-        ///You can assign the object
-        BinaryMessage &operator=(BinaryMessage &&other);
-
-        BinaryMessage(const BinaryMessage &other) = delete;
-        BinaryMessage operator=(const BinaryMessage &other) = delete;
-        ~BinaryMessage();
-
-        ///Retrieves ID
-        std::size_t get_id() const;
-
-        ///Send the message (you can call it only once)
-        void send(const std::string_view &data);
-        ///Send the message (you can call it only once)
-        void send(std::string &&data);
-
-    protected:
-        PWkPeer _peer;
-        std::size_t _id = 0;
-    };
-
-
-
-    void binary_receive(std::size_t id, BinaryContentEvent &&callback);
 
 
     ///Determines, whether stream is still connected
     bool is_connected() const;
 
 
+
+    ///Public interface to access variables
+    template<typename T, typename Cmp>
+    class VarSpace {
+    public:
+    	using Map = std::map<std::string, T, std::less<> >;
+    	using UpdateFn = void (Peer::*)(const std::string_view &name, const std::optional<T> &value);
+
+    	///Get value of the variable
+    	/**
+    	 * @param name name of the varuable
+    	 * @return returns content of the variable as optional. You need to check
+    	 * .has_value() to detemine whether the variable is defined
+    	 */
+    	std::optional<T> get(const std::string_view &name) const;
+
+    	///Get all variables
+    	Map get();
+
+    	///Merge variables from the map - replacing existing ones
+    	void merge(const Map &other);
+
+    	///Replace whole map
+    	void set(const Map &other);
+
+    protected:
+    	friend class Peer;
+    	VarSpace(Peer &owner, UpdateFn upfn);
+    	Peer &_owner;
+    	UpdateFn _upfn;
+    	std::shared_timed_mutex &lock() const;
+    	Map _vars;
+
+    	VarSpace(const VarSpace &other) = delete;
+    	VarSpace &operator=(const VarSpace &other) = delete;
+    	///Set value of the variable
+    	/**
+    	 * @param name name of variable
+    	 * @param value a value as optional. If you use the optional without a
+    	 * value, result is in deletion of the variable, otherwise, the
+    	 * value is set or replaced
+    	 */
+    	void set(const std::string_view &name, const std::optional<T> &value);
+    };
+
+    template<typename T, typename Cmp>
+    class VarSpaceRW: public VarSpace<T,Cmp> {
+    public:
+    	using VarSpace<T,Cmp>::VarSpace;
+    	using VarSpace<T,Cmp>::set;
+    };
+
+    VarSpace<std::string, std::equal_to<std::string> > remote;
+    VarSpaceRW<std::string, std::equal_to<std::string> > local;
+    VarSpaceRW<std::any, NullCmp<std::any> > context;
+
+
 protected:
+
+    using MsgBld = ondra_shared::Vector<char, UMQ_MESSAGE_BUILDER_STACK_ALLOC>;
 
     Peer();
 
     friend class Request;
-	void on_result(const std::string_view &id, const std::string_view &data);
-	void on_welcome(const std::string_view &version, const std::string_view &data);
-	void on_exception(const std::string_view &id, const std::string_view &data);
+	void on_result(const std::string_view &id, const Payload &data);
+	void on_welcome(const std::string_view &version, const Payload &data);
+	void on_exception(const std::string_view &id, const Payload &data);
 	void on_topic_close(const std::string_view &topic_id);
-	std::string on_hello(const std::string_view &version, const std::string_view &data);
+	void on_hello(const std::string_view &version, const Payload &data);
 	void on_unsubscribe(const std::string_view &topic_id);
-	bool on_topic_update(const std::string_view &topic_id,
-			const std::string_view &data);
-	bool on_method_call(const std::string_view &id, const std::string_view &method,
-			const std::string_view &args);
-    bool on_callback(const std::string_view &id, const std::string_view &name, const std::string_view &args);
-	void on_execute_error(const std::string_view &id, const std::string_view &msg);
+	bool on_topic_update(const std::string_view &topic_id, const Payload &data);
+	bool on_method_call(const std::string_view &id, const std::string_view &method, const Payload &args);
+    bool on_callback(const std::string_view &id, const std::string_view &name, const Payload &args);
+	void on_execute_error(const std::string_view &id, const Payload &msg);
 	bool on_binary_message(const umq::MessageRef &msg);
+	bool on_attachment_error(const std::string_view &msg);
 	void on_set_var(const std::string_view &variable, const std::string_view &data);
 	void on_unset_var(const std::string_view &variable);
-    bool on_discover(const std::string_view &id, const std::string_view &variable);
+    bool on_discover(const std::string_view &id, const std::string_view &query);
 
     ///Parse message from connection
     void parse_message(const MessageRef &msg);
+
+    void parse_text_message(std::string_view data, AttachList &&alist);
 
     ///Sends topic update
     /**
@@ -470,7 +435,7 @@ protected:
      * @note default implementation always returns true. Extending class can implement own logic
      *
      */
-    bool send_topic_update(const std::string_view &topic_id, const std::string_view &data, HighWaterMarkBehavior hwmb, std::size_t hwm_size );
+    bool send_topic_update(const std::string_view &topic_id, const Payload &data, HighWaterMarkBehavior hwmb, std::size_t hwm_size );
 
     ///Close the topic
     /**
@@ -493,14 +458,14 @@ protected:
      *
      *
      */
-    void send_result(const std::string_view &id, const std::string_view &data);
+    void send_result(const std::string_view &id, const Payload &data);
 
     ///Sends exception of RPC call
     /**
      * @param id id of request
      * @param data data of request
      */
-    void send_exception(const std::string_view &id, const std::string_view &data);
+    void send_exception(const std::string_view &id, const Payload &data);
 
     void send_exception(const std::string_view &id, int code, const std::string_view &message);
 
@@ -511,7 +476,7 @@ protected:
      * @param id id of request
      * @param method_name method name
      */
-    void send_execute_error(const std::string_view &id, const std::string_view &msg);
+    void send_execute_error(const std::string_view &id, const Payload &msg);
 
     void send_execute_error(const std::string_view &id, PeerError code);
 
@@ -520,14 +485,14 @@ protected:
      * @param version version (1.0,0)
      * @param data arbitrary data
      */
-    void send_welcome(const std::string_view &version, const std::string_view &data);
+    void send_welcome(const std::string_view &version, const Payload &data);
 
     ///Sends hello
     /**
      * @param version version (1.0,0)
      * @param data arbitrary data
      */
-    void send_hello(const std::string_view &version, const std::string_view &data);
+    void send_hello(const std::string_view &version, const Payload &data);
 
     ///Sets remote variable
     /**
@@ -539,15 +504,24 @@ protected:
 
     void send_var_unset(const std::string_view &variable);
 
-    void send_call(const std::string_view &id, const std::string_view &method, const std::string_view &params);
+    void send_call(const std::string_view &id, const std::string_view &method, const Payload &params);
 
-    void send_callback_call(const std::string_view &id, const std::string_view &method, const std::string_view &args);
+    void send_callback_call(const std::string_view &id, const std::string_view &method, const Payload &args);
 
     static const char *error_to_string(PeerError err);
 
     void send_message(const MessageRef &msg);
 
     void send_discover(const std::string_view &id, const std::string_view &method_name);
+
+    void send_message(PeerMsgType msgType, const std::string_view &id);
+
+    template<typename MiddlePart>
+    void build_send_message(PeerMsgType msgType, const std::string_view &id, MiddlePart &&fn, const Payload &payload);
+    void run_upload();
+
+    void send_message(PeerMsgType msgType, const std::string_view &id, const Payload &payload);
+    void send_message(PeerMsgType msgType, const std::string_view &id, const std::string_view &cmd, const Payload &payload);
 
 
 
@@ -572,8 +546,6 @@ protected:
     using Topics = std::map<std::string, UnsubscribeRequest, std::less<> >;
     using Subscriptions = std::map<std::string, TopicUpdateCallback, std::less<> >;
     using CallMap = std::map<std::string, ResponseCallback, std::less<> >;
-    using BinaryReservation = std::deque<std::optional<std::string> >;
-    using BinaryCallbacks = std::map<std::size_t, BinaryContentEvent>;
     using CallbackMap = std::map<std::string, MethodCall, std::less<> >;
 
 
@@ -581,22 +553,19 @@ protected:
     Topics _topic_map;
     Subscriptions _subscr_map;
     CallMap _call_map;
-    BinaryReservation _bin_res;
-    BinaryCallbacks _bin_cbs;
     CallbackMap _cb_map;
 
     HelloRequest _hello_cb;
     WelcomeResponse _welcome_cb;
     DisconnectEvent _discnt_cb;
-    SharedVariables _var_map;
-    SharedVariables _local_var_map;
-    PeerVariables _peer_var_map;
     std::size_t _hwm;
 
     mutable std::shared_timed_mutex _lock;
     unsigned int _call_id = 0;
-    std::size_t _send_bin_order = 0;
-    std::size_t _rcv_bin_order = 0;
+
+    std::queue<Attachment> _dwnl_attachments;
+    std::queue<Attachment> _upld_attachments;
+
 
 
     void finish_call(const std::string_view &id, Response &&response);
@@ -605,27 +574,65 @@ protected:
 
     void send_node_error(PeerError error);
 
-    std::size_t binary_reserve_id();
-
-    void binary_send(std::size_t id, const std::string_view &data);
-
-    void binary_send(std::size_t id, std::string &&data);
-
-    void binary_flush();
-
-    class PreparedMessage: public Message {
-    public:
-        PreparedMessage(PeerMsgType type, const std::string_view &topic, const std::initializer_list<std::string_view> &data);
-    };
 
     void listener_fn(const std::optional<MessageRef> &msg);
     void disconnect();
-
+    void syncVar(const std::string_view &var, const std::optional<std::string> &value);
 
 };
 
+inline void Peer::send_message(PeerMsgType msgType, const std::string_view &id) {
+	MsgBld bld;
+	bld.push_back(static_cast<char>(msgType));
+	bld.append(id.begin(), id.end());
+	send_message(MessageRef{MessageType::text, std::string_view(bld.data(),bld.size())});
 }
 
+template<typename MiddlePart>
+inline void Peer::build_send_message(PeerMsgType msgType, const std::string_view &id,
+		MiddlePart &&fn, const Payload &payload) {
+	MsgBld bld;
+	if (!payload.attachments.empty()) {
+		bld.push_back(static_cast<char>(PeerMsgType::attachment));
+		ondra_shared::unsignedToString(payload.attachments.size(), [&](char c){
+			bld.push_back(c);
+		},10,1);
+		bld.push_back('\n');
+	}
+	bld.push_back(static_cast<char>(msgType));
+	bld.append(id.begin(), id.end());
+	bld.push_back('\n');
+	fn(bld);
+	bld.append(payload.begin(), payload.end());
+	if (payload.attachments.empty()) {
+		send_message(MessageRef{MessageType::text, std::string_view(bld.data(),bld.size())});
+	} else {
+		std::lock_guard _(_lock);
+		bool need_start = _upld_attachments.empty();
+		for (const auto &x: payload.attachments) {
+			_upld_attachments.push(x);
+		}
+		send_message(MessageRef{MessageType::text, std::string_view(bld.data(),bld.size())});
+		if (need_start) run_upload();
+	}
+}
+
+inline void Peer::send_message(PeerMsgType msgType, const std::string_view &id,
+		const Payload &payload) {
+	build_send_message(msgType, id, [](MsgBld &){}, payload);
+}
+
+inline void Peer::send_message(PeerMsgType msgType, const std::string_view &id,
+		const std::string_view &cmd,
+		const Payload &payload) {
+	build_send_message(msgType, id, [&](MsgBld &bld){
+		bld.append(cmd.begin(),cmd.end());
+		bld.push_back('\n');
+	}, payload);
+}
+
+
+}
 
 
 #endif /* LIB_UMQ_NODE_H_32130djwoeijd08923jdeioew */
