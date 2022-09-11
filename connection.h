@@ -10,14 +10,15 @@
 #include <optional>
 #include <cstddef>
 
+#include "message.h"
 namespace umq {
 
-struct MessageRef;
+
 
 class AbstractConnectionListener {
 public:
     virtual ~AbstractConnectionListener() = default;
-    virtual void on_message(const MessageRef &msg) = 0;
+    virtual void on_message(const MsgFrame &msg) = 0;
     virtual void on_close() = 0;
 };
 
@@ -41,7 +42,7 @@ public:
      * @retval true message sent (doesn't mean, that has been delivered)
      * @retval false message was not send, connection is disconnected
      */
-    virtual bool send_message(const MessageRef &msg) = 0;
+    virtual bool send_message(const MsgFrame &msg) = 0;
 
     ///Starts listening incomming messages
     /**

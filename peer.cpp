@@ -56,9 +56,9 @@ void Peer::subscribe(const std::string_view &topic, TopicUpdateCallback &&cb) {
 	_subscr_map.emplace(std::string(topic), std::move(cb));
 }
 
-TopicUpdateCallback Peer::start_publish(const std::string_view &topic, HighWaterMarkBehavior hwmb, std::size_t hwm_size) {
+TopicUpdateCallback Peer::start_publish(const std::string_view &topic, HighWaterMarkBehavior hwmb, std::size_t hwm_percent) {
 	std::unique_lock _(_lock);
-	if (hwm_size == 0) hwm_size = _hwm;
+	std::size_t hwm_size = _hwm*hwm_percent/100;
 
 	if (is_connected()) {
 
@@ -201,7 +201,7 @@ void Peer::on_execute_error(const std::string_view &id, const Payload &msg) {
 	finish_call(id, Response(Response::Type::execute_error, std::move(msg)));
 }
 
-bool Peer::on_binary_message(const MessageRef &msg) {
+bool Peer::on_binary_message(const MsgFrame &msg) {
 	if (!_dwnl_attachments.empty()) {
 		Attachment a = _dwnl_attachments.front();
 		_dwnl_attachments.pop();
@@ -298,7 +298,7 @@ void Peer::run_upload() {
 			if (melk) {
 				try {
 					const std::string &data = ctx;
-					melk->send_message(MessageRef{MessageType::binary, data});
+					melk->send_message(MsgFrame{MsgFrameType::binary, data});
 				} catch (std::exception &e) {
 					melk->send_message(PeerMsgType::attachmentError, e.what());
 				}
@@ -347,7 +347,7 @@ void Peer::disconnect() {
 
 }
 
-void Peer::listener_fn(const std::optional<MessageRef> &msg) {
+void Peer::listener_fn(const std::optional<MsgFrame> &msg) {
     if (msg.has_value()) {
         parse_message(*msg);
     } else {
@@ -377,8 +377,8 @@ Peer::~Peer() {
 }
 
 
-void Peer::parse_message(const MessageRef &msg) {
-    if (msg.type == MessageType::binary) {
+void Peer::parse_message(const MsgFrame &msg) {
+    if (msg.type == MsgFrameType::binary) {
         if (!on_binary_message(msg)) {
             send_node_error(PeerError::unexpectedBinaryFrame);
         }
@@ -561,7 +561,7 @@ void Peer::send_callback_call(const std::string_view &id, const std::string_view
     send_message(PeerMsgType::callback, id, name, args);
 }
 
-void Peer::send_message(const MessageRef &msg) {
+void Peer::send_message(const MsgFrame &msg) {
     if (!_conn) return;
     _conn->send_message(msg);
 }
@@ -613,7 +613,7 @@ void Peer::Listener::on_close() {
 }
 
 
-void Peer::Listener::on_message(const MessageRef &msg) {
+void Peer::Listener::on_message(const MsgFrame &msg) {
     _owner.parse_message(msg);
 
 }
@@ -728,14 +728,14 @@ void Peer::syncVar(const std::string_view &var, const std::optional<std::string>
 }
 
 template<typename T, typename Cmp>
-inline std::optional<T> Peer::VarSpace<T, Cmp>::get(const std::string_view &name) const {
+inline std::optional<T> Peer::VarSpaceRO<T, Cmp>::get(const std::string_view &name) const {
 	std::shared_lock _(lock());
 	auto iter = _vars.find(name);
 	return iter == _vars.end()?std::optional<T>():std::optional<T>(iter->second);
 }
 
 template<typename T, typename Cmp>
-inline void Peer::VarSpace<T, Cmp>::set(const std::string_view &name, const std::optional<T> &value) {
+inline void Peer::VarSpaceRO<T, Cmp>::set(const std::string_view &name, const std::optional<T> &value) {
 	bool mod = false;
 	{
 		std::unique_lock _(lock());
@@ -764,20 +764,20 @@ inline void Peer::VarSpace<T, Cmp>::set(const std::string_view &name, const std:
 }
 
 template<typename T, typename Cmp>
-inline typename Peer::VarSpace<T, Cmp>::Map Peer::VarSpace<T, Cmp>::get() {
+inline typename Peer::VarSpaceRO<T, Cmp>::Map Peer::VarSpaceRO<T, Cmp>::get() {
 	std::shared_lock _(lock());
 	return _vars;
 }
 
 template<typename T, typename Cmp>
-inline void Peer::VarSpace<T, Cmp>::merge(const Map &other) {
+inline void Peer::VarSpaceRO<T, Cmp>::merge(const Map &other) {
 	for (const auto &x: other) {
 		set(x.first, x.second);
 	}
 }
 
 template<typename T, typename Cmp>
-inline void Peer::VarSpace<T, Cmp>::set(const Map &other) {
+inline void Peer::VarSpaceRO<T, Cmp>::set(const Map &other) {
 	if (_upfn) {
 		{
 			std::unique_lock _(lock());
@@ -799,7 +799,7 @@ inline void Peer::VarSpace<T, Cmp>::set(const Map &other) {
 }
 
 template<typename T, typename Cmp>
-inline Peer::VarSpace<T, Cmp>::VarSpace(Peer &owner, UpdateFn upfn)
+inline Peer::VarSpaceRO<T, Cmp>::VarSpaceRO(Peer &owner, UpdateFn upfn)
 :_owner(owner)
 ,_upfn(upfn)
 {
@@ -807,11 +807,11 @@ inline Peer::VarSpace<T, Cmp>::VarSpace(Peer &owner, UpdateFn upfn)
 }
 
 template<typename T, typename Cmp>
-inline std::shared_timed_mutex& Peer::VarSpace<T, Cmp>::lock() const {
+inline std::shared_timed_mutex& Peer::VarSpaceRO<T, Cmp>::lock() const {
 	return _owner._lock;
 }
 
-template class Peer::VarSpace<std::string, std::equal_to<std::string> >;
-template class Peer::VarSpace<std::any, NullCmp<std::any> >;
+template class Peer::VarSpaceRO<std::string, std::equal_to<std::string> >;
+template class Peer::VarSpaceRO<std::any, NullCmp<std::any> >;
 
 }

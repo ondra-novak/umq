@@ -45,7 +45,7 @@ void create_number(std::size_t s, C &c) {
     }
 }
 
-bool TCPConnection::send_message(const MessageRef &msg) {
+bool TCPConnection::send_message(const MsgFrame &msg) {
     if (_disconnected) return false;
     std::vector<char> msgBuff;
     msgBuff.push_back(static_cast<char>(msg.type));
@@ -109,11 +109,11 @@ void TCPConnection::listen_cycle() {
                             case Type::pong_frame:
                                 break;
                             case Type::binary_frame:
-                                _msg_type = MessageType::binary;
+                                _msg_type = MsgFrameType::binary;
                                 _msg_stage = ReadStage::size;
                                 break;
                             case Type::text_frame:
-                                _msg_type = MessageType::text;
+                                _msg_type = MsgFrameType::text;
                                 _msg_stage = ReadStage::size;
                                 break;
                         }
@@ -132,7 +132,7 @@ void TCPConnection::listen_cycle() {
                         _msg_size -= ctx.size();
                         _msg_buffer.append(ctx);
                         if (_msg_size == 0) {
-                            _listener->parse_message(MessageRef{_msg_type, _msg_buffer});
+                            _listener->parse_message(MsgFrame{_msg_type, _msg_buffer});
                             _msg_buffer.clear();
                             _msg_stage = ReadStage::type;
                         }

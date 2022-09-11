@@ -68,7 +68,7 @@ enum class PeerMsgType: char {
 	///Attachment error
 	/**#<error message> - counted as attachment, but contians an error
 	 */
-	attachmentError = '#',
+	attachmentError = '-',
 
 	attachment = 'A',
 
@@ -126,15 +126,8 @@ using HelloRequest = ondra_shared::Callback<void(const Payload &, WelcomeRespons
 using UnsubscribeRequest = ondra_shared::Callback<void()>;
 ///called when node disconnects, before it is destroyed
 using DisconnectEvent = ondra_shared::Callback<void()>;
-
-using BinaryContentEvent = ondra_shared::Callback<void(bool valid, const std::string_view &content)>;
-
-using SharedVariables = std::map<std::string, PayloadStr, std::less<> >;
-
-using PeerVariables = std::map<std::string, std::any, std::less<> >;
-
+///Helper class which returns false for every compare request
 template<typename T> struct NullCmp { bool operator()(const T &a, const T &b)const {return false;} };
-
 
 using DiscoverCallback = ondra_shared::Callback<void(DiscoverResponse &)>;
 
@@ -233,8 +226,9 @@ public:
      *
      * @param topic topic to be published
      * @param hwmb defines behaviour for high water mark signal.
-     * @param hwm_size defines custom HWM size for this topic. Default 0 means to use value specified by set_hwm()
-     *
+     * @param hwm_per_cent modifies high water mark level by specified percent. This allows to
+     *          increase or decrease high water mark level for particular publisher. The
+     *          value is in percent - default is 100 
      * @return function to call to publish the update for this node.
      *
      * @note unsubscribe is performed implicitly. When node unsubscribes,
@@ -244,7 +238,7 @@ public:
      * node unsubscribe, which can cause build up memory temporaryli (in
      * the case of sequence sub-unsub-sub-unsub...)
      */
-    TopicUpdateCallback start_publish(const std::string_view &topic, HighWaterMarkBehavior hwmb = HighWaterMarkBehavior::skip, std::size_t hwm_size = 0);
+    TopicUpdateCallback start_publish(const std::string_view &topic, HighWaterMarkBehavior hwmb = HighWaterMarkBehavior::skip, std::size_t hwm_per_cent = 100);
 
 
     ///Specifies callback function when unsubscribe is requested
@@ -326,11 +320,14 @@ public:
      */
     void unsubscribe(const std::string_view &topic);
 
-
+    ///Sets high water mark level
+    /** High water mark level is used during publishing */
     void set_hwm(std::size_t sz);
 
+    ///Retrieves high water mark level
     std::size_t get_hwm() const;
 
+    ///default high water mark level (global)
     static std::size_t default_hwm;
 
 
@@ -343,7 +340,7 @@ public:
 
     ///Public interface to access variables
     template<typename T, typename Cmp>
-    class VarSpace {
+    class VarSpaceRO {
     public:
     	using Map = std::map<std::string, T, std::less<> >;
     	using UpdateFn = void (Peer::*)(const std::string_view &name, const std::optional<T> &value);
@@ -359,22 +356,21 @@ public:
     	///Get all variables
     	Map get();
 
-    	///Merge variables from the map - replacing existing ones
-    	void merge(const Map &other);
-
-    	///Replace whole map
-    	void set(const Map &other);
+    	std::optional<T> operator[](const std::string_view &name) const {
+    	    return get(name);
+    	}
 
     protected:
     	friend class Peer;
-    	VarSpace(Peer &owner, UpdateFn upfn);
+    	
+    	VarSpaceRO(Peer &owner, UpdateFn upfn);
     	Peer &_owner;
     	UpdateFn _upfn;
     	std::shared_timed_mutex &lock() const;
     	Map _vars;
 
-    	VarSpace(const VarSpace &other) = delete;
-    	VarSpace &operator=(const VarSpace &other) = delete;
+    	VarSpaceRO(const VarSpaceRO &other) = delete;
+    	VarSpaceRO &operator=(const VarSpaceRO &other) = delete;
     	///Set value of the variable
     	/**
     	 * @param name name of variable
@@ -383,18 +379,33 @@ public:
     	 * value is set or replaced
     	 */
     	void set(const std::string_view &name, const std::optional<T> &value);
+        ///Merge variables from the map - replacing existing ones
+        void merge(const Map &other);
+
+        ///Replace whole map
+        void set(const Map &other);
     };
 
     template<typename T, typename Cmp>
-    class VarSpaceRW: public VarSpace<T,Cmp> {
+    class VarSpace: public VarSpaceRO<T,Cmp> {
     public:
-    	using VarSpace<T,Cmp>::VarSpace;
-    	using VarSpace<T,Cmp>::set;
+    	using VarSpaceRO<T,Cmp>::VarSpaceRO;
+    	using VarSpaceRO<T,Cmp>::set;
+        using VarSpaceRO<T,Cmp>::merge;
+
     };
 
-    VarSpace<std::string, std::equal_to<std::string> > remote;
-    VarSpaceRW<std::string, std::equal_to<std::string> > local;
-    VarSpaceRW<std::any, NullCmp<std::any> > context;
+    ///Remote variables
+    /** Variables set by remote peer. These variables can be only read, not set */
+    VarSpaceRO<std::string, std::equal_to<std::string> > remote;
+    ///Local variables
+    /** Variables owned by this peer, can be read and set, remote peer can read them, but not modify*/
+    VarSpace<std::string, std::equal_to<std::string> > local;
+    ///Context variables
+    /** These variables are associated with peer context, it is always local and visible
+     * only locally. This allow to associate anything the peer's connection
+     */
+    VarSpace<std::any, NullCmp<std::any> > context;
 
 
 protected:
@@ -414,14 +425,14 @@ protected:
 	bool on_method_call(const std::string_view &id, const std::string_view &method, const Payload &args);
     bool on_callback(const std::string_view &id, const std::string_view &name, const Payload &args);
 	void on_execute_error(const std::string_view &id, const Payload &msg);
-	bool on_binary_message(const umq::MessageRef &msg);
+	bool on_binary_message(const umq::MsgFrame &msg);
 	bool on_attachment_error(const std::string_view &msg);
 	void on_set_var(const std::string_view &variable, const std::string_view &data);
 	void on_unset_var(const std::string_view &variable);
     bool on_discover(const std::string_view &id, const std::string_view &query);
 
     ///Parse message from connection
-    void parse_message(const MessageRef &msg);
+    void parse_message(const MsgFrame &msg);
 
     void parse_text_message(std::string_view data, AttachList &&alist);
 
@@ -510,7 +521,7 @@ protected:
 
     static const char *error_to_string(PeerError err);
 
-    void send_message(const MessageRef &msg);
+    void send_message(const MsgFrame &msg);
 
     void send_discover(const std::string_view &id, const std::string_view &method_name);
 
@@ -533,7 +544,7 @@ protected:
         Listener(const Listener &) = delete;
         Listener &operator=(const Listener &) = delete;
         virtual void on_close() override;
-        virtual void on_message(const umq::MessageRef &msg) override;
+        virtual void on_message(const umq::MsgFrame &msg) override;
     protected:
         Peer &_owner;
     };
@@ -575,7 +586,7 @@ protected:
     void send_node_error(PeerError error);
 
 
-    void listener_fn(const std::optional<MessageRef> &msg);
+    void listener_fn(const std::optional<MsgFrame> &msg);
     void disconnect();
     void syncVar(const std::string_view &var, const std::optional<std::string> &value);
 
@@ -585,7 +596,7 @@ inline void Peer::send_message(PeerMsgType msgType, const std::string_view &id) 
 	MsgBld bld;
 	bld.push_back(static_cast<char>(msgType));
 	bld.append(id.begin(), id.end());
-	send_message(MessageRef{MessageType::text, std::string_view(bld.data(),bld.size())});
+	send_message(MsgFrame{MsgFrameType::text, std::string_view(bld.data(),bld.size())});
 }
 
 template<typename MiddlePart>
@@ -605,14 +616,13 @@ inline void Peer::build_send_message(PeerMsgType msgType, const std::string_view
 	fn(bld);
 	bld.append(payload.begin(), payload.end());
 	if (payload.attachments.empty()) {
-		send_message(MessageRef{MessageType::text, std::string_view(bld.data(),bld.size())});
+		send_message(MsgFrame{MsgFrameType::text, std::string_view(bld.data(),bld.size())});
 	} else {
-		std::lock_guard _(_lock);
 		bool need_start = _upld_attachments.empty();
 		for (const auto &x: payload.attachments) {
 			_upld_attachments.push(x);
 		}
-		send_message(MessageRef{MessageType::text, std::string_view(bld.data(),bld.size())});
+		send_message(MsgFrame{MsgFrameType::text, std::string_view(bld.data(),bld.size())});
 		if (need_start) run_upload();
 	}
 }

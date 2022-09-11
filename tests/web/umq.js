@@ -17,6 +17,8 @@ export const PeerError = {
 export const PeerMsgType =  {
     execution_error : '!',
     discover : '?',
+    attachment : 'A',
+    attachment_error : '-',
     callback : 'C',
     exception : 'E',
     hello : 'H',
@@ -44,7 +46,7 @@ export class Exception extends Error {
     get_message(){
         return Peer.split(" ".this.message)[1];
     }
-}
+};
 
 ///Execution error is mostly used as error happened before the execution reached the method
 export class ExecutionError extends Error {
@@ -58,13 +60,20 @@ export class ExecutionError extends Error {
     get_message(){
         return Peer.split(" ".this.message)[1];
     }
-}
+};
 
-export class Request extends String {
+export class Payload extends String {
+    constructor(text, attachments) {
+        super(text);
+        this.attachments = attachments;
+    }    
+};
+
+export class Request extends Payload {
     #method_name;
     #peer;
-    constructor(text, method_name, peer) {
-        super(text);
+    constructor(sup, method_name, peer) {        
+        super(sup, sup.attachments);
         this.#method_name = method_name;
         this.#peer = peer;                 
     }
@@ -74,7 +83,7 @@ export class Request extends String {
     get_peer() {
         return this.#peer;
     }
-}
+};
 
 
 export class Peer {
@@ -252,10 +261,11 @@ export class Peer {
                
            
     #receive_msg(msg) {
-        if (typeof msg.data == "string") this.#parse_msg(msg.data);
+        if (typeof msg.data == "string") this.#parse_msg(msg.data,[]);
+        else this.#binary_msg(msg.data);
     }
         
-    #parse_msg(msg) {
+    #parse_msg(msg, att) {
         const [topic,data] = Peer.split("\n",msg);
         const type = topic.substring(0,1);
         const id = topic.substring(1);
@@ -266,29 +276,29 @@ export class Peer {
                     break;
                 case PeerMsgType.callback:{
                             const [name,args] = Peer.split("\n", data);
-                            this.#on_callback(id, name, args);
+                            this.#on_callback(id, name, new Payload(args,att));
                           }                
                         
                         break;                
                 case PeerMsgType.method_call: {
                             const [name,args] = Peer.split("\n", data);
-                            this.#on_call(id, name, args);
+                            this.#on_call(id, name, new Payload(args,att));
                           }                
                           break;
                 case PeerMsgType.result:
-                          this.#on_result(id, data);
+                          this.#on_result(id, new Payload(data,att));
                           break;
                 case PeerMsgType.exception: 
-                          this.#on_exception(id, data);
+                          this.#on_exception(id, new Payload(data,att));
                           break;
                 case PeerMsgType.execution_error: 
-                          this.#on_execute_error(id, data);
+                          this.#on_execute_error(id, new Payload(data,att));
                           break;
                 case PeerMsgType.discover: 
                           this.#on_discover(id, data);
                           break;
                 case PeerMsgType.topic_update: 
-                          this.#on_topic_update(id, data);
+                          this.#on_topic_update(id, new Payload(data,att));
                           break;
                 case PeerMsgType.unsubscribe:
                           this.#on_unsubscribe(id);
@@ -303,12 +313,41 @@ export class Peer {
                           this.#on_var_unset(id);
                           break;
                 case PeerMsgType.welcome:
-                          this.#on_welcome(id, data);                          
+                          this.#on_welcome(id, new Payload(data,att));                          
                           break;
-    
+                case PeerMsgType.attachment: {
+                    const n = parseInt(id);
+                    if (isNaN(n)) this.#send_node_error(PeerError.messageParseError);
+                    else {
+                        var att = [];
+                        for (let i = 0; i <n; i++) {
+                            att.push(new Promise((ok,err)=>{
+                                this.#dwnl_attachments.push({ok:ok,err:err});
+                            }));
+                        }
+                        this.#parse_msg(data,att);    
+                    }
+                }
+                break;
+                case PeerMsgType.attachment_error: 
+                    if (this.#dwnl_attachments.length) {
+                        this.#dwnl_attachments.shift().err(data);
+                    } else {
+                        this.#send_node_error(PeerError.unexpectedBinaryFrame);
+                    }
+                break;
             }
         } catch (e) {
             this.#send_node_error(PeerError.messageProcessingError);
+        }
+    }
+    
+    #binary_msg(data) {
+        if (this.#dwnl_attachments.length) {
+            var a = this.#dwnl_attachments.shift();
+            a.ok(data); 
+        } else {
+            this.#send_node_error(PeerError.unexpectedBinaryFrame);
         }
     }
 
@@ -414,50 +453,74 @@ export class Peer {
         }
     }
     
+    async #send_msg(msg, attachments) {
+        if (Array.isArray(attachments) && attachments.length>0) {
+            var a = attachments;
+            msg = "A"+a.length+"\n"+msg;
+            this.#ws.send(msg);
+            var r = this.#upld_attachments.length;
+            this.#upld_attachments.push.apply(this.#upld_attachments,a);
+            if (r==0) {
+                while (this.#upld_attachments.length) {
+                    let i = this.#upld_attachments.shift();
+                    try {
+                        let d = await i;
+                        if (typeof d == "string") d = new Blob([d]);
+                        this.#ws.send(d);
+                    } catch(e) {
+                        this.#send_msg(PeerMsgType.attachment_error+"\n"+e.toString());
+                    }
+                }
+            }
+        } else {
+            this.#ws.send(msg);
+        }
+    }
+    
     #send_unsubscribe(id) {
-        this.#ws.send(PeerMsgType.unsubscribe+id);
+        this.#send_msg(PeerMsgType.unsubscribe+id);
     }
     
     #send_node_error(error) {
         var err = error.toString()+" "+Peer.error_to_string(error);
-        this.#ws.send(PeerMsgType.exception+"\n"+err);        
+        this.#send_msg(PeerMsgType.exception+"\n"+err);        
         this.#ws.close();        
         this.#on_error(new Exception(error,Peer.error_to_string(error)));
     }
     
     #send_execute_error(id, errcode) {
-        this.#ws.send(PeerMsgType.execution_error+id+"\n"+errcode+" "+Peer.error_to_string(errcode));
+        this.#send_msg(PeerMsgType.execution_error+id+"\n"+errcode+" "+Peer.error_to_string(errcode),errcode.attachments);
     }
     
     #send_discover(id, query) {
-        this.#ws.send(PeerMsgType.discover+id+"\n"+query);
+        this.#send_msg(PeerMsgType.discover+id+"\n"+query);
     }
     
     #send_exception(id, arg1, arg2) {
         if (arg2 === undefined) {
-            this.#ws.send(PeerMsgType.exception+id+"\n"+arg1);
+            this.#send_msg(PeerMsgType.exception+id+"\n"+arg1, arg1.attachments);
         } else {
-            this.#ws.send(PeerMsgType.exception+id+"\n"+arg1+" "+arg2);
+            this.#send_msg(PeerMsgType.exception+id+"\n"+arg1+" "+arg2);
         }        
     }
     #send_result(id, data) {
-        this.#ws.send(PeerMsgType.result+id+"\n"+data);       
+        this.#send_msg(PeerMsgType.result+id+"\n"+data, data.attachments);       
     }
     #send_hello(id, data) {
-        this.#ws.send(PeerMsgType.hello+id+"\n"+data);
+        this.#send_msg(PeerMsgType.hello+id+"\n"+data, data.attachments);
     }
     #send_topic_close(id) {
-        this.#ws.send(PeerMsgType.topic_close+id);
+        this.#send_msg(PeerMsgType.topic_close+id);
     }
     #send_topic_update(id, data) {
-        this.#ws.send(PeerMsgType.topic_update+id+"\n"+data);
+        this.#send_msg(PeerMsgType.topic_update+id+"\n"+data, data.attachments);
         
     }
     #send_method_call(id, method, args) {
-        this.#ws.send(PeerMsgType.method_call+id+"\n"+method+"\n"+args);
+        this.#send_msg(PeerMsgType.method_call+id+"\n"+method+"\n"+args, args.attachments);
     }
     #send_callback(id,name, args) {
-        this.#ws.send(PeerMsgType.callback+id+"\n"+name+"\n"+args);
+        this.#send_msg(PeerMsgType.callback+id+"\n"+name+"\n"+args, args.attachments);
     }
         
     #cleanup() {        
@@ -486,10 +549,10 @@ export class Peer {
         else this.#send_result(id, r.toString());
     }
     send_var_set(name, val) {
-        this.#ws.send(PeerMsgType.var_set+name+"\n"+val);
+        this.#send_msg(PeerMsgType.var_set+name+"\n"+val);
     }
     send_var_unset(name) {
-        this.#ws.send(PeerMsgType.var_unset+name);
+        this.#send_msg(PeerMsgType.var_unset+name);
     }
     
     #proxy_handler() {
@@ -534,6 +597,8 @@ export class Peer {
     #p_open;  //open promise - triggered once the websocket connection is opened
     #p_welcome;  //welcome promise - triggered after welcome arrives
     #p_disconnect; //disconnect promise
+    #dwnl_attachments=[];
+    #upld_attachments=[];
  
     
     static create_ws_path(loc /*window.location*/, path /*relative path*/) {

@@ -46,6 +46,7 @@ UMQ rámec má jednoduchou strkturu
 
 * **!** - Execution error
 * **?** - Method discover
+  **-**   Attachment error
 * **A** - Attachment
 * **C** - Callback call
 * **E** - Exception
@@ -232,33 +233,60 @@ Xtoken
 
 Attachment představuje binární obsah propojený z danou zprávou. Je to jediný způsob, jak předávat binární obsah zkrze textové zprávy.
 
-Binární obsah se přenáší pomocí binárního rámce. Binární rámce nemají žádnou identifikaci. V rámci spojení jsou číslované počínaje indexem 0 (tedy první binární rámec má index 0, další 1, atd)
+Binární obsah se přenáší pomocí binárního rámce. Binární rámce nemají žádnou identifikaci. 
 
-Attachment není celá zpráva, jedná se o prefix existující zprávy - rozšiřuje tedy protokol o možnost přidat ke zprávě attachment. Součástí zprávy přitom může být víc attachmentů,
-a jejich seznam se uvádí před samotnou zprávou
+Attachment není celá zpráva, jedná se o prefix existující zprávy - rozšiřuje tedy protokol o možnost přidat ke zprávě attachment. Parametrem prefixu A je počet binárních rámců, které jsou
+svázané s toutu zprávou
 
 ```
-A<id1>
-A<id2>
-A<id3>
-...
+A<cnt>
 <typ><id>
 <data>
 ```
 
 Příklad - zavolání metody s binárním obsahem. Příklad může představovat jednoduchý upload
-binárního obsahu jako soubor `obr.jpg`. Samotný binární obsah může být poslán před zprávou nebo i za zprávou, nicméně musí to být 8. binární blob ve streamu - je třeba si zajistit, aby odesílatel neumožnil přenos jiného blobu.
+binárního obsahu jako soubor `obr.jpg`. Samotný binární obsah je poslán za zprávou.
 
 ```
-A7
+==== TEXT ====
+A1
 M123
 upload
 obr.jpg
+==== BIN ====
+ ...binarní obsah <obr.jpg> ...
+==== TEXT ====
+ ...další rámce...
 ```
 
-Velikost attachmentu není nijak omezena, vše záleží na konkrétní platformě. Na serverech však může existovat omezení na objem dopředu poslaných a nezpracovaných binárních rámců. Pokud je tento limit překročen, může server ukončit spojení. Vlastní binární rámce lze
-tedy posílat i po odeslání zprávy z attaachmentem s tím, že druhá strana během zpracování zprávy bude čekat na přijetí rámce. Typicky je to realizováno jako async operace
+Velikost attachmentu není nijak omezena, vše záleží na konkrétní platformě. 
 
+### Pravidla pro binární rámce
+
+Binární rámce jsou zasílány nezávisle na textových rámcích. Musí pouze platit, že binární rámec určité zprávy se může poslat až po odeslání vlastní zprávy. Nemusí to však být hned
+následující rámec. Pokud jiné zprávy mají binární rámce, pak se rámce řadí do fronty a odesílají se postupně, přičemž mezi binární rámce je možné vložít libovolné textové rámce, které přenos binárních rámců neovlivní.
+
+Pokud zpráva deklaruje několik attachmentů, jsou tyto attachmenty zařazeny do fronty a 
+odesílány postupně jako binární rámce. Stejným způsobem jsou potom vyzvedávány a přiřazovány ke zprávám, které na ně čekají.
+
+Z hlediska aplikačního rozhraní bývají attachmenty řešeny jako promise/future - v javascriptu lze využít async-await na čtení attachmentu. Při přeposílání zpráv mezi peery lze nechat odeslat zprávu s attachmenty aniž by vlastní attachmenty byly staženy.
+
+### Zpráva '-' attachment error
+
+Protože lze attachment ohlásit před tím, než je skutečně získán, může se stát, že attachment nakonec není možné doručit, protože při jeho získávání došlo k chybě. Tato zpráva, která se posílá jako textová zpráva, nahrazuje attachment, který se očekával. Tato zpráva nemá žádné id, a pouze v datové části obsahuje text chyby
+
+```
+==== TEXT ====
+A1
+M123
+upload
+obr.jpg
+==== TEXT ====
+-
+Image retrival error, connection lost
+```
+
+Chyba se následně propaguje jako exception která vyskočí při pokusu získat danný attachment
 
 
 ## Routování

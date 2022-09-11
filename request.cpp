@@ -125,6 +125,8 @@ Response::Response(Type type, const Payload &data)
 {
 	_text.reserve(data.length()+1);
 	std::copy(data.begin(), data.end(), std::back_inserter(_text));
+	_d = std::string_view(data.data(), data.length());
+	_text.push_back(0);
 }
 
 }

@@ -27,7 +27,7 @@ class TypeWithAttachT: public T {
 public:
 	using T::T;
 	TypeWithAttachT(const T &other):T(other) {}
-	TypeWithAttachT(T &&other):T(std::move(other)) {}
+	TypeWithAttachT(T &&other):T(std::forward<T>(other)) {}
 	TypeWithAttachT(const TypeWithAttachT &other) = default;
 	TypeWithAttachT(TypeWithAttachT &&other) = default;
 	TypeWithAttachT(const T &other, const AttachList &lst):T(other),attachments(lst) {}
@@ -37,7 +37,7 @@ public:
 		return *this;
 	}
 	TypeWithAttachT &operator=(T &&msg) {
-		T::operator=(std::move(msg));
+		T::operator=(std::forward<T>(msg));
 		return *this;
 	}
 	TypeWithAttachT &operator=(const TypeWithAttachT &msg) = default;

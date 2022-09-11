@@ -30,7 +30,7 @@ public:
 
     virtual void start_listen(umq::AbstractConnectionListener *listener) override;
     virtual void flush() override;
-    virtual bool send_message(const umq::MessageRef &msg) override;
+    virtual bool send_message(const umq::MsgFrame &msg) override;
     virtual bool is_hwm(std::size_t v) override;
 
 protected:
@@ -56,7 +56,7 @@ protected:
     userver::Stream _stream;
 
     ReadStage _msg_stage = ReadStage::type;
-    MessageType _msg_type = MessageType::text;
+    MsgFrameType _msg_type = MsgFrameType::text;
     std::size_t _msg_size = 0;
     std::string _msg_buffer;
 

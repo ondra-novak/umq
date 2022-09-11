@@ -25,10 +25,10 @@ void WSConnection::start_listen(AbstractConnectionListener &listener) {
                   return false;
                   break;
               case WSFrameType::binary:
-                  listener.on_message(MessageRef{MessageType::binary, msg.data});
+                  listener.on_message(MsgFrame{MsgFrameType::binary, msg.data});
                   break;
               case WSFrameType::text:
-                  listener.on_message(MessageRef{MessageType::text, msg.data});
+                  listener.on_message(MsgFrame{MsgFrameType::text, msg.data});
                   break;
               default:
                   break;
@@ -41,12 +41,12 @@ void WSConnection::flush() {
     _s.flush(); // @suppress("Return value not evaluated")
 }
 
-bool WSConnection::send_message(const umq::MessageRef &msg) {
+bool WSConnection::send_message(const umq::MsgFrame &msg) {
     switch(msg.type) {
-        case MessageType::text:
+        case MsgFrameType::text:
             return _s.send_text(msg.data);
 
-        case MessageType::binary:
+        case MsgFrameType::binary:
             return _s.send_binary(msg.data);
 
         default:
