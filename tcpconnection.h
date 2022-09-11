@@ -26,18 +26,18 @@ public:
 
     ~TCPConnection();
 
-
-
-    virtual void start_listen(umq::AbstractConnectionListener *listener) override;
+    virtual void start_listen(AbstractConnectionListener &listener) override;
     virtual void flush() override;
-    virtual bool send_message(const umq::MsgFrame &msg) override;
+    virtual bool send_message(const MsgFrame &msg) override;
     virtual bool is_hwm(std::size_t v) override;
 
 protected:
 
-
-
-
+    userver::Stream _stream;
+    
+    void listener_loop(AbstractConnectionListener &listener);
+    
+    
     enum class Type: char {
         text_frame,
         binary_frame,
@@ -50,21 +50,27 @@ protected:
         content
     };
 
-    AbstractConnectionListener *_listener = nullptr;
-    std::atomic<bool> _disconnected = false;
-    bool ping_sent = false;
-    userver::Stream _stream;
+    bool _ping_sent = false;
+    bool _connected = true;
+    
 
     ReadStage _msg_stage = ReadStage::type;
-    MsgFrameType _msg_type = MsgFrameType::text;
+    Type _msg_type = Type::text_frame;
     std::size_t _msg_size = 0;
     std::string _msg_buffer;
-
+    
+    std::mutex _lk;
+    std::string _fmt_buffer;
+    
+    void process_frame(AbstractConnectionListener &listener, Type type, std::string_view data);
+    
+    bool send_message(Type type, const std::string_view &data);
+    
     void disconnect();
     void finish_write(bool ok);
     void listen_cycle();
     void send_ping();
-    void send_pong();
+    void send_pong(const std::string_view &data);
 
 
 

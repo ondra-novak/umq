@@ -13,24 +13,79 @@
 #include <future>
 namespace umq {
 
-TCPConnection::TCPConnection(userver::Stream &&stream):_stream(std::move(stream)) {
+TCPConnection::TCPConnection(userver::Stream &&stream)
+:_stream(userver::createBufferedStream(std::move(stream))) {}
+
+void TCPConnection::start_listen(AbstractConnectionListener &listener) {
+    listener_loop(listener);
 }
 
+void TCPConnection::listener_loop(AbstractConnectionListener &listener) {
+    _stream.read() >> [this,&listener](std::string_view buff) {
+        if (buff.empty()) {
+            if (_stream.timeouted()) {
+                if (_ping_sent) {
+                    listener.on_close();
+                    _connected = false;
+                } else {
+                    send_ping();
+                    _stream.clear_timeout();
+                }
+            } else {
+                listener.on_close();
+                _connected = false;
+            }
+        } else {
+            std::string_view data;
+            _ping_sent = false;
+            while (!buff.empty()) {
+                switch (_msg_stage) {
+                    case ReadStage::type: 
+                        _msg_type = static_cast<Type>(buff[0]);
+                        _msg_stage = ReadStage::size;
+                        buff = buff.substr(1);
+                        break;
+                    case ReadStage::size: 
+                        _msg_size = (_msg_size << 7) | (buff[0] & 0x7F);
+                        if ((buff[0] & 0x80) == 0) {
+                            _msg_stage = ReadStage::content;
+                        }
+                        break;
+                    case ReadStage::content: 
+                        data = buff.substr(0, _msg_size);
+                        buff = buff.substr(data.length());
+                        _msg_size-=data.size();
+                        if (_msg_size) {
+                            _msg_buffer.append(data);
+                        } else {
+                            if (_msg_buffer.empty()) {
+                                process_frame(listener,_msg_type, data);
+                            } else {
+                                _msg_buffer.append(data);                            
+                                process_frame(listener,_msg_type, _msg_buffer);
+                            }
+                            _msg_buffer.clear();
+                        }
+                }
+            }
+        }
+    };
+}
 
-void TCPConnection::start_listen(AbstractConnectionListener *listener) {
-    _listener = listener;
-    listen_cycle();
+void TCPConnection::process_frame(AbstractConnectionListener &listener, Type type, std::string_view data) {
+    switch(type) {
+        case Type::text_frame: listener.on_message(MsgFrame{MsgFrameType::text,data});break;
+        case Type::binary_frame: listener.on_message(MsgFrame{MsgFrameType::binary,data});break;
+        case Type::ping_frame: send_pong(data);break;
+        default:break; //ignore unknown frame
+    }
+}
+
+void TCPConnection::send_ping() {
+    send_message(Type::ping_frame, std::string_view());
 }
 
 void TCPConnection::flush() {
-    if (_disconnected) return;
-    std::promise<bool> p;
-    _stream.write(std::string_view(), false) >> [&](bool x) {
-        p.set_value(x);
-    };
-    bool z = p.get_future().get();
-    if (!z) disconnect();
-
 }
 
 template<typename C>
@@ -45,121 +100,29 @@ void create_number(std::size_t s, C &c) {
     }
 }
 
-bool TCPConnection::send_message(const MsgFrame &msg) {
-    if (_disconnected) return false;
-    std::vector<char> msgBuff;
-    msgBuff.push_back(static_cast<char>(msg.type));
-    create_number(msg.data.size(), msgBuff);
-    msgBuff.insert(msgBuff.end(), msg.data.begin(), msg.data.end());
-    std::string_view sw (msgBuff.data(), msgBuff.size());
-    _stream.write(sw,false) >> [=, msgBuff = std::move(msgBuff)](bool ok) {
-        finish_write(ok);
-    };
+bool TCPConnection::send_message(Type type, const std::string_view &data) {
+    std::lock_guard _(_lk);
+    if (!_connected) return false;
+    _fmt_buffer.push_back(static_cast<char>(type));
+    create_number(data.length(), _fmt_buffer);
+    _fmt_buffer.append(data);
+    _connected = _stream.write_async(_fmt_buffer, nullptr);
+    _fmt_buffer.clear();
     return true;
-
 }
 
-TCPConnection::~TCPConnection() {
-    //prevents to call on_disconnect during destruction
-    _disconnected = true;
-}
-
-bool TCPConnection::is_hwm(std::size_t v) {
-    return _stream->get_pending_write_size() >= v;
-
-}
-
-void TCPConnection::disconnect() {
-    bool c = false;
-    if (_disconnected.compare_exchange_strong(c, true) && _listener) {
-        _listener->on_disconnect();
+bool TCPConnection::send_message(const MsgFrame &msg) {
+    switch(msg.type) {
+        default: return false;
+        case MsgFrameType::text: 
+            return send_message(Type::text_frame, msg.data);            
+        case MsgFrameType::binary: 
+            return send_message(Type::binary_frame, msg.data);
     }
 }
 
-void TCPConnection::listen_cycle() {
-    auto stream = _stream.get();
-    _stream.read() >> [=](const std::string_view &data) {
-        if (data.empty()) {
-            if (stream->timeouted()) {
-                if (ping_sent) {
-                    TCPConnection::disconnect();
-                    return;
-                } else {
-                    ping_sent = true;
-                    send_ping();
-                    listen_cycle();
-                }
-            } else {
-                TCPConnection::disconnect();
-                return;
-            }
-        } else {
-            ping_sent = false;
-            std::string_view d = data;
-            while (!d.empty()) {
-                switch(_msg_stage) {
-                    default:
-                    case ReadStage::type: {
-                        Type t = static_cast<Type>(d[0]);
-                        d = d.substr(1);
-                        switch (t) {
-                            default:
-                            case Type::ping_frame: send_pong();
-                                break;
-                            case Type::pong_frame:
-                                break;
-                            case Type::binary_frame:
-                                _msg_type = MsgFrameType::binary;
-                                _msg_stage = ReadStage::size;
-                                break;
-                            case Type::text_frame:
-                                _msg_type = MsgFrameType::text;
-                                _msg_stage = ReadStage::size;
-                                break;
-                        }
-                    }break;
-                    case ReadStage::size: {
-                        unsigned char c = static_cast<unsigned char>(d[0]);
-                        d = d.substr(1);
-                        _msg_size = (_msg_size << 7) | (c & 0x7F);
-                        if (!(c & 0x80)) {
-                            _msg_stage = ReadStage::content;
-                        }
-                    }break;
-                    case ReadStage::content: {
-                        std::string_view ctx = d.substr(0, _msg_size);
-                        d = d.substr(ctx.size());
-                        _msg_size -= ctx.size();
-                        _msg_buffer.append(ctx);
-                        if (_msg_size == 0) {
-                            _listener->parse_message(MsgFrame{_msg_type, _msg_buffer});
-                            _msg_buffer.clear();
-                            _msg_stage = ReadStage::type;
-                        }
-                    }
-                }
-            }
-            listen_cycle();
-        }
-    };
-}
-
-void TCPConnection::finish_write(bool ok) {
-    if (!ok) TCPConnection::disconnect();
-}
-
-void TCPConnection::send_ping() {
-   static char ping_frame = static_cast<char>(Type::ping_frame);
-   _stream.write(std::string_view(&ping_frame,1), false) >> [=](bool ok){
-       finish_write(ok);
-   };
-}
-
-void TCPConnection::send_pong() {
-    static char pong_frame = static_cast<char>(Type::pong_frame);
-    _stream.write(std::string_view(&pong_frame,1), false) >> [=](bool ok){
-        finish_write(ok);
-    };
+void TCPConnection::send_pong(const std::string_view &data) {
+    send_message(Type::pong_frame, data);
 }
 
 }
