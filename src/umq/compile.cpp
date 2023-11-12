@@ -6,12 +6,9 @@
  */
 
 
+#include "basic_coroutine.h"
 #include "connection.h"
-#include "future.h"
 
-template class umq::Future<int>;
-template class umq::Future<void>;
-template class umq::SharedFuture<int>;
 
 
 

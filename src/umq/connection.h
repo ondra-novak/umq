@@ -8,7 +8,7 @@
 #ifndef SRC_UMQ_CONNECTION_H_
 #define SRC_UMQ_CONNECTION_H_
 
-#include "future.h"
+#include "basic_coroutine.h"
 
 namespace umq {
 
@@ -41,6 +41,26 @@ public:
      * @return future with message
      */
     virtual Future<Message> receive() = 0;
+
+    ///Shutdown any blocking operation
+    /**
+     * The function must interrupt and finalize any blocking operation. It must
+     * reslove receive() future synchronously and ensure, that any awaiting operation
+     * is finished before the function returns (unless the awaiting coroutine performs
+     * another co_await, which is considered as finished state)
+     *
+     * If the stream is blocked in send() operation it should be also unblocked discarding
+     * the whole output buffer
+     *
+     * When stream is in shutdown state, it can't continue in communication and must be
+     * destroyed(not even close can be send)
+     *
+     * The function is called before destruction to ensure, that any pending operation
+     * is terminated before the stream is destroyed
+     */
+    virtual void shutdown() const = 0;
+
+
     ///send a message
     /**
      * @param msg message to send
@@ -55,6 +75,7 @@ public:
      */
     virtual std::size_t getBufferedAmount() const = 0;
 
+
     ///Waits until all buffered writes are sent
     /**
      * @retval true flushed everything
@@ -62,6 +83,8 @@ public:
      *
      */
     virtual Future<bool> flush() = 0;
+
+
 
 
 };
