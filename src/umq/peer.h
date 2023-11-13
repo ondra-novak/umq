@@ -42,13 +42,27 @@ public:
 
     ///Error - peer rejected the connection
     static constexpr unsigned int err_rejected = 1;
+    ///Callback ID was not found
     static constexpr unsigned int err_callback_not_found = 2;
+    ///Malformed message
     static constexpr unsigned int err_protocol_error = 3;
+    ///Requested command, which is not supported
     static constexpr unsigned int err_unsupported_command = 4;
+    ///Requested version which is not supported
     static constexpr unsigned int err_unsupported_version = 5;
+    ///Received RPC request, but nobody is able to process such a request (RPC error)
+    static constexpr unsigned int err_no_rpc = 6;
+    ///Received RPC request, but nobody is able to process such a request (RPC error)
+    static constexpr unsigned int err_rpc_route_error = 7;
+    ///Received RPC request, but nobody is able to process such a request (RPC error)
+    static constexpr unsigned int err_rpc_temporary_unavailable= 8;
 
     static std::string_view errorMessage(unsigned int error);
+    static auto format_error(unsigned int err) {
+        return [err](auto &s) {s << err << " " << errorMessage(err);};
+    }
 
+    Peer() = default;
     ~Peer();
 
     using BinaryPayload = std::vector<unsigned char>;
@@ -69,42 +83,6 @@ public:
 
     };
 
-    ///Result of callback call
-    /** It has base of Payload, however adds promise which must be resolved
-     * with result
-     */
-    struct CallbackCall: Payload {
-
-        struct Result {
-            std::string_view _text;
-            Attachments _attachments;
-            Result(const std::string_view &text):_text(text) {}
-            Result(const std::string_view &text, Attachments &&att):_text(text), _attachments(std::move(att)) {}
-        };
-        ///Promise must be resolved with result of the call
-        /**
-         * This can be called as a function with one or two arguments, same
-         * arguments as constructor of Result.
-         *
-         * You can also call .reject() to emit an exception
-         */
-        Future<Result>::Promise respond;
-
-        CallbackCall(ID id, const std::string_view &str, Attachments &&att, Future<Result>::Promise &&respond)
-            :Payload(id, str, std::move(att))
-            ,respond(std::move(respond)) {}
-    };
-
-    ///RPC callback
-    /** RPC callback is a rpc call from the server to the client. It is one-shot call.
-     */
-    struct Callback {
-        ///Identifier of this callback, you need to send this ID to the server in a response
-        /** The server will use this ID to call your callback */
-        ID id;
-        /// Future which is resolved once the call is made
-        Future<CallbackCall> result;
-    };
 
 
     ///Starts client connection
@@ -152,7 +130,7 @@ public:
     /**
      * @return a future which is resolved, when close signal is received
      * @note there can be only one active future. Previously active future is
-     * finished with broker promise error
+     * finished with broker promise error. You can convert the future into shared_future
      */
     Future<void> close_event();
 
@@ -174,10 +152,11 @@ public:
      * again to awaits for next message. There can be only one RPC server.
      * @return message as payload
      *
-     * @note You should call this function inside of coroutine or use a callback to
-     * receive the request. When request is received, it is required to call this function
-     * again in the context of the callback, otherwise the RPC server can be
-     * temporarily disabled
+     * @note Synchronous access to result is discouraged unless the RPC communication
+     * is strictly synchronous, meaning it is "ping pong" communation. Otherwise
+     * you can miss requests
+     *
+     * @note there can be only one RPC server at time. Operation is not MT Safe
      */
     Future<Payload> rpc_server();
 
@@ -208,12 +187,88 @@ public:
     ID create_subscription();
 
 
-    ///Receive data send by publisher
+    ///Listen on subscription
     /**
+     * You need to start listening the subscription before it is requested on
+     * publisher, otherwise subscription can be ended prematurely (without notification)
+     *
      * @param subscription identifier
      * @return received data
+     *
+     * @note to continue listening on subscription, you need to call this function
+     * again. This must be done in coroutine or in callback, synchronous waiting
+     * is discouraged. Failing doing this causes unsubscribe
+     *
+     * @note to unsubscribe, simply stop calling this function
      */
-    Future<Payload> receive(ID subscription);
+    Future<Payload> listen_subscription(ID subscription);
+
+    struct Core;
+
+    ///Represents single subscription created on publisher's peer node
+    /**
+     * The structure is returned from function begin_publish and represents
+     * opened subscription
+     */
+    class Subscription {
+        ///Weak pointer to internal structure
+        std::weak_ptr<Peer::Core> _target;
+        ID _id;
+    public:
+        Subscription(std::shared_ptr<Peer::Core> target, ID id);
+        ///Check state of subscription
+        /**
+         * @retval true subscription is active
+         * @retval false subscription has ended
+         */
+        bool check() const;
+        ///Publish to subscription
+        /**
+         * @param data data to publis
+         * @param attachments attachments
+         * @retval true sent to publish
+         * @retval false subscription has ended, peer is disconected, etc, data was not
+         * sent
+         */
+        bool publish(const std::string_view &data, Attachments &&attachments = {});
+        ///Register a function which is called when subscription is ended
+        /**
+         * @param fn function
+         * @retval true registered
+         * @retval false subscription has ended (function is not called)
+         */
+        bool on_unsubscribe(std::function<void()> fn);
+        ///Close subscription from publisher's side
+        void close();
+        ///Retrieves ID of the subscription
+        ID get_id() const;
+        ///Retrieve shared instance of the Peer;
+        /**
+         * @return shared insance of the Peer - can return empty value if the peer
+         * is no longer available
+         */
+        std::optional<Peer> get_peer() const;
+
+        bool operator<(const Subscription &x) const {
+            return (_id < x._id)| ((_id == x._id) & _target.owner_before(x._target));
+        }
+        bool operator>(const Subscription &x) const {
+            return (_id > x._id) | ((_id == x._id) & x._target.owner_before(_target));
+        }
+        bool operator==(const Subscription &x) const {
+            return !operator!=(x);
+        }
+        bool operator!=(const Subscription &x) const {
+            return operator>(x) | !operator<(x);
+        }
+        bool operator<=(const Subscription &x) const {
+            return !operator>(x);
+        }
+        bool operator>=(const Subscription &x) const {
+            return !operator<(x);
+        }
+
+    };
 
     ///Starts publish to subscription. This is called on publisher's side
     /**
@@ -222,25 +277,46 @@ public:
      * should use a callback asynchronously process the event about closing. This
      * event is send regardless on,which side closed the subscription.
      */
-    Future<void> begin_publish(ID subscription);
+    Subscription begin_publish(ID subscription);
 
-    ///Send a data to the subscription
-    /**
-     * @param subscription ID of subscription. Subscription must be started using begin_publish()
-     * @param data data being publish
-     * @param attachments
-     * @return
-     */
-    bool publish(ID subscription, const std::string_view &data, Attachments &&attachments = {});
 
-    ///Finishes publishing (at publisher side)
-    /**
-     * You need to call this function to close stream from publisher side. For instance
-     * if stream ends, no more data can be published.
-     *
-     * @param subscription ID
+    ///Result of callback call
+    /** It has base of Payload, however adds promise which must be resolved
+     * with result
      */
-    void end_publish(ID subscription);
+    struct CallbackCall: Payload {
+
+        struct Result {
+            std::string_view _text;
+            Attachments _attachments;
+            Result(const std::string_view &text):_text(text) {}
+            Result(const std::string_view &text, Attachments &&att):_text(text), _attachments(std::move(att)) {}
+        };
+        ///Promise must be resolved with result of the call
+        /**
+         * This can be called as a function with one or two arguments, same
+         * arguments as constructor of Result.
+         *
+         * You can also call .reject() to emit an exception
+         */
+        Future<Result>::Promise respond;
+
+        CallbackCall(ID id, const std::string_view &str, Attachments &&att, Future<Result>::Promise &&respond)
+            :Payload(id, str, std::move(att))
+            ,respond(std::move(respond)) {}
+    };
+
+    ///RPC callback
+    /** RPC callback is a rpc call from the server to the client. It is one-shot call.
+     */
+    struct Callback {
+        ///Identifier of this callback, you need to send this ID to the server in a response
+        /** The server will use this ID to call your callback */
+        ID id;
+        /// Future which is resolved once the call is made
+        Future<CallbackCall> result;
+    };
+
 
     ///Create a one-shot callback call
     /**
@@ -280,9 +356,32 @@ public:
      */
     void close();
 
+    ///Immediately closes connection
+    void shutdown();
+
+    ///Sets attribute on remote peer
+    /**
+     * @param attribute_name attribute name
+     * @param attribute_value attribute value
+     * @param attachments attributes can have attachments
+     *
+     * Attributes are updated asynchronously, however, they are visible for
+     * messages sent after they are set
+     */
     void set_attribute(const std::string_view &attribute_name, const std::string_view &attribute_value, Attachments &&attachments = {});
-    void unset_attribute(const std::string_view &attribute_name);
+
+    ///Clears attribute
+    /**
+     * @param attribute_name name of attribute
+     */
+    void clear_attribute(const std::string_view &attribute_name);
+    ///Retrieve attribute set by remote peer
+    /**
+     * @param attribute_name name of an attribute
+     * @return value or undefined
+     */
     std::optional<Payload> get_attribute(const std::string_view &attribute_name) const;
+
 
 public:
     static constexpr char cmd_attachment = 'A';
@@ -294,6 +393,7 @@ public:
     static constexpr char cmd_callback_call= 'B';
     static constexpr char cmd_rpc_result= 'R';
     static constexpr char cmd_rpc_exception= 'E';
+    static constexpr char cmd_rpc_error= '!';
     static constexpr char cmd_topic_update= 'T';
     static constexpr char cmd_topic_close= 'D';
     static constexpr char cmd_topic_unsubscribe= 'U';
@@ -306,14 +406,15 @@ public:
 
 protected:
 
-    struct Core;
     struct Sender;
     struct Receiver;
     struct PendingCallback;
+    struct UnsubscribeNotify;
 
     std::shared_ptr<Core> _core;
 
 
+    Peer(std::shared_ptr<Core> c): _core(std::move(c)) {}
 
 
 

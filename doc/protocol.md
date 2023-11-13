@@ -140,11 +140,52 @@ R5AX12:Fine
 
 Sent by RPC server as respone to a RPC request. It indicates a failure and carries an error description
 
+The `message id` must contain ID of RPC request
+
 This message can't have attachments
 
 ```
 client: C112:Brew coffee
 server: E112:I'm teapot
+```
+
+### Command `!` - RPC Error
+
+Sent by RPC server as respone to a RPC request. It indicates that RPC request was not
+processed, it didn't reached the requested function. 
+
+The `message id` must contain ID of RPC request
+
+The text must be in format `<code> <message>`
+
+```
+6 Not RPC server
+```
+
+Remote node doesn't support RPC server feature. This is global error, which means different
+requests will generate the same error.
+
+```
+7 No route to requested method
+```
+
+Requested function on the remote node was not found. It means, that request cannot be
+routed to the destination, there is no defined way how to map the request to a function
+
+```
+8 Temporarily unavailable
+```
+
+Request did not reached the function because target node is currently unavailable. This
+can appear, when request is forward to other nodes and the path or target node is
+offline.
+
+
+This message can't have attachments
+
+```
+client: C112:Brew coffee
+server: !112:7 No route to requested method
 ```
 
 ### Command `B` - Callback

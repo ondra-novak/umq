@@ -256,7 +256,7 @@ public:
         return find_target(t, targets...);
     }
 
-    static bool find_target(const Target *t) {
+    static bool find_target(const Target *) {
         return false;
     }
 
@@ -500,6 +500,15 @@ public:
             auto x = _ptr.exchange(nullptr, std::memory_order_relaxed);
             if (x) {
                 x->set_exception(std::make_exception_ptr<Exception>(std::forward<Exception>(except)));
+                return DeferNotify(x);
+            }
+            return {};
+        }
+
+        DeferNotify reject(std::exception_ptr e) {
+            auto x = _ptr.exchange(nullptr, std::memory_order_relaxed);
+            if (x) {
+                x->set_exception(std::move(e));
                 return DeferNotify(x);
             }
             return {};
@@ -1360,6 +1369,52 @@ public:
     std::exception_ptr &get_exception_ptr() const noexcept {
         return _ptr->get_exception_ptr();
     }
+
+    using Target = typename RefCntFuture::Target;
+
+    bool register_target_async(Target &t) {
+        return _ptr->register_target_async(t);
+    }
+
+    ///Atomically register target (no failure)
+    /**
+     * @param t target to register
+     * @retval true registered, target will be called asynchronously
+     * @retval false future is no longer pending, target were activated sychronously
+     */
+    bool register_target(Target &t) {
+        return _ptr->register_target(t);
+    }
+
+    ///Atomically registers one-shot dynamically allocated target
+    /**
+     * It is expected, that target is destroyed once it is activated. If this rule
+     * is not followed (you allocated standard target and passed its pointer), result
+     * is memory leak.
+     *
+     * @param t unique pointer to one-shot dynamically allocated target
+     * @retval true target registered
+     * @retval false already resolved, target has been destroyed without activation
+     */
+    bool register_target_async(std::unique_ptr<Target> t) {
+        return _ptr->register_target_async(std::move(t));
+    }
+
+    ///Atomically registers one-shot dynamically allocated target
+    /**
+     * It is expected, that target is destroyed once it is activated. If this rule
+     * is not followed (you allocated standard target and passed its pointer), result
+     * is memory leak.
+     *
+     * @param t unique pointer to one-shot dynamically allocated target
+     * @retval true target registered
+     * @retval false already resolved but target was activated and destroyed synchronously
+     */
+    bool register_target(std::unique_ptr<Target> t) {
+        return _ptr->register_target(std::move(t));
+    }
+
+
 protected:
 
     template<typename ... Args>

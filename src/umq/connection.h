@@ -12,6 +12,8 @@
 
 namespace umq {
 
+using namespace basic_coro;
+
 class IConnection {
 public:
     virtual ~IConnection() = default;

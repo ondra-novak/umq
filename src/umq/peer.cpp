@@ -4,6 +4,7 @@
 #include <queue>
 #include <mutex>
 #include <optional>
+#include <functional>
 
 
 namespace umq {
@@ -22,6 +23,11 @@ struct Peer::Sender {
     std::queue<SharedFuture<BinaryPayload> > _attachments;
     Future<bool> _flusher;
     SharedFuture<BinaryPayload> _cur_waiting;
+    bool _force_stop = false;
+    union {
+        Future<bool>::Target _flusher_target;
+        Future<BinaryPayload>::Target _cur_waiting_target;
+    };
 
     bool is_active() const {return static_cast<bool>(_owner_locked) ;};
     void start(std::shared_ptr<Core> owner);
@@ -31,6 +37,15 @@ struct Peer::Sender {
     void on_attachment_ready(Future<BinaryPayload> *f) noexcept;
 };
 
+
+struct Peer::Receiver {
+    std::shared_ptr<Core> _owner_locked;
+    Future<IConnection::Message> _reader;
+    Future<IConnection::Message>::Target _reader_target;
+
+    void start(std::shared_ptr<Core> owner);
+    void on_data(Future<IConnection::Message> *f) noexcept;
+};
 
 unsigned int Peer::Error::get_code() const {
     return std::strtoul(msg.c_str(), nullptr, 10);
@@ -42,6 +57,14 @@ std::string_view Peer::Error::get_message() const {
     else return std::string_view(x+1);
 }
 
+struct Peer::UnsubscribeNotify {
+    std::function<void()> _fn;
+    UnsubscribeNotify() = default;
+    UnsubscribeNotify(std::function<void()> fn):_fn(std::move(fn)) {}
+    ~UnsubscribeNotify() {
+        if (_fn) _fn();
+    }
+};
 
 struct Peer::Core: std::enable_shared_from_this<Peer::Core> {
     std::unique_ptr<IConnection> _conn;
@@ -51,27 +74,28 @@ struct Peer::Core: std::enable_shared_from_this<Peer::Core> {
     Future<Payload>::Promise _welcome;
     Future<Payload>::Promise _hello;
     Future<Payload>::Promise _rpc;
+    Future<Payload>::LazyTarget _rpc_lazy;
 
     std::recursive_mutex _send_mutex;
     std::ostringstream _send_buff;
     Sender _attach_sender;
+    Receiver _receiver;
 
 
-    Future<IConnection::Message> _receiver;
     std::queue<Promise<BinaryPayload> > _waiting_attachments;
     ID _id_gen = 1;
 
     std::unordered_map<ID, Future<Payload>::Promise> _pending_rpc;
     std::unordered_map<ID, Future<CallbackCall>::Promise> _pending_callbacks;
     std::unordered_map<ID, Future<Payload>::Promise> _subscriptions;
-    std::unordered_map<ID, Future<void>::Promise> _topics;
+    std::unordered_map<ID, UnsubscribeNotify> _topics;
     std::unordered_map<std::string, Payload> _attributes;
 
 
     Core(std::unique_ptr<IConnection> &&con)
         :_conn(std::move(con))
-        ,_receiver(_conn->receive()) {
-
+        ,_rpc_lazy( Future<Payload>::LazyTarget::member_fn<&Core::on_begin_rpc>(this))
+    {
     }
 
     ~Core() {
@@ -79,10 +103,12 @@ struct Peer::Core: std::enable_shared_from_this<Peer::Core> {
     }
 
     void start() {
-        _receiver.invoke<&Core::on_receive>(this);
+        _receiver.start(shared_from_this());
     }
+    bool process_message(const IConnection::Message &msg);
     void process_text_message(const std::string_view &data, Attachments && att={});
     void process_binary_message(const std::string_view &data);
+    void on_stream_close();
     bool send(char cmd, ID id, const std::string_view &message, Attachments &&attachs);
     template<typename Fn>
     bool send_fn(char cmd, ID id, Fn fn, Attachments &&attachs);
@@ -94,14 +120,37 @@ struct Peer::Core: std::enable_shared_from_this<Peer::Core> {
     void process_topic_update(ID id, const std::string_view &payload, Attachments &&att);
     void process_attribute_set(const std::string_view &payload, Attachments &&att);
     void process_attribute_reset(const std::string_view &payload);
+    void on_begin_rpc(Future<Payload>::Promise payload) noexcept;
+    void on_unsubscribe(ID id) noexcept;
 
 };
+
+void Peer::Receiver::start(std::shared_ptr<Core> owner) {
+    _owner_locked = std::move(owner);
+    _reader_target = _reader_target.template member_fn<&Receiver::on_data>(this);
+    _reader << [&]{return _owner_locked->_conn->receive();};
+}
+
+void Peer::Receiver::on_data(Future<IConnection::Message> *f) noexcept {
+    try {
+        IConnection::Message data = *f;
+        if (_owner_locked->process_message(data)) {
+            _reader << [&]{return _owner_locked->_conn->receive();};
+        }
+        auto own = std::move(_owner_locked);
+        own->on_stream_close();
+    } catch (...) {
+        auto own = std::move(_owner_locked);
+        own->on_stream_close();
+    }
+}
 
 
 struct Peer::PendingCallback {
     std::weak_ptr<Core> _core;
     ID _id;
     Future<CallbackCall::Result> _result_wait;
+    Future<CallbackCall::Result>::Target _result_wait_target;
     void on_result(Future<CallbackCall::Result> *f) noexcept {
         std::shared_ptr<Core> lk_core =_core.lock();
         if (lk_core) {
@@ -116,38 +165,15 @@ struct Peer::PendingCallback {
     }
     PendingCallback(std::weak_ptr<Peer::Core> core, ID id)
         :_core(std::move(core))
-        ,_id(id) {}
+        ,_id(id)
+        ,_result_wait_target(Future<CallbackCall::Result>::Target::member_fn<&PendingCallback::on_result>(this))
+    {}
     Future<CallbackCall::Result>::Promise charge() {
         auto p = _result_wait.get_promise();
-        _result_wait.invoke<&PendingCallback::on_result>(this);
+        _result_wait.register_target(_result_wait_target);
         return p;
     }
 };
-
-void Peer::Core::on_receive(Future<IConnection::Message> *f) noexcept {
-    try {
-        const IConnection::Message &msg = *f;
-        switch (msg.type) {
-            default:
-            case IConnection::Message::close:
-                _end_monitor();
-                return;
-            case IConnection::Message::text:
-                process_text_message(msg.data);
-                break;
-            case IConnection::Message::binary:
-                process_binary_message(msg.data);
-                break;
-        }
-        _receiver << [&]{return _conn->receive();};
-        _receiver.invoke<&Core::on_receive>(this);
-    } catch (const InvalidIDFormat &) {
-        send_fatal_error(err_protocol_error, "Invalid message ID format");
-
-    } catch (...) {
-        _end_monitor.reject();
-    }
-}
 
 void Peer::Core::process_binary_message(const std::string_view &data) {
     if (_waiting_attachments.empty()) return;
@@ -166,7 +192,58 @@ auto Peer::Core::pick_promise(T &map, ID id) {
     return p;
 }
 
+void Peer::Core::on_unsubscribe(ID id) noexcept {
+    UnsubscribeNotify ntf;
+    {
+        std::lock_guard _(_mx);
+        auto iter = _topics.find(id);
+        if (iter == _topics.end()) return;
+        ntf = std::move(iter->second);
+        _topics.erase(iter);
+    }
 
+}
+
+bool Peer::Core::process_message(const IConnection::Message &msg) {
+    switch (msg.type) {
+        default:
+        case IConnection::Message::close:
+            return false;
+        case IConnection::Message::text:
+            process_text_message(msg.data);
+            return true;
+        case IConnection::Message::binary:
+            process_binary_message(msg.data);
+            return true;
+    }
+}
+
+void Peer::Core::on_stream_close() {
+    //clear any pending promise
+    decltype(_waiting_attachments) waiting_attachments;
+    decltype(_pending_rpc) pending_rpc;
+    decltype(_pending_callbacks) pending_callbacks;
+    decltype(_subscriptions) subscriptions;
+    decltype(_topics) topics;
+    {
+        waiting_attachments = std::move(_waiting_attachments);
+        pending_rpc = std::move(_pending_rpc);
+        pending_callbacks = std::move(_pending_callbacks);
+        subscriptions = std::move(_subscriptions);
+        topics = std::move(_topics);
+        //force stop sending attachments
+        _attach_sender._force_stop = true;
+    }
+    _hello.drop();
+    _welcome.drop();
+    _rpc.drop();
+    //if exception
+    auto e = std::current_exception();
+    //reject witj exception
+    if (e) _end_monitor.reject(e);
+    //on fulfill end monitoring promise
+    else _end_monitor();
+}
 
 void Peer::Core::process_text_message(const std::string_view &data, Attachments && att) {
     auto sep = data.find(':');
@@ -220,7 +297,10 @@ void Peer::Core::process_text_message(const std::string_view &data, Attachments 
                 _welcome(id, std::string(payload_part), std::move(att));
             }
             break;
-        case cmd_rpc_call: _rpc(id, std::string(payload_part), std::move(att));
+        case cmd_rpc_call:
+            if (!_rpc(id, std::string(payload_part), std::move(att))) {
+                send_fn(cmd_rpc_error, id, format_error(err_no_rpc),{});
+            }
             break;
         case cmd_rpc_result:
             pick_promise(_pending_rpc, id)(id, std::string(payload_part), std::move(att));
@@ -238,7 +318,7 @@ void Peer::Core::process_text_message(const std::string_view &data, Attachments 
             pick_promise(_subscriptions, id).reject(SubscriptionClosed());
             break;
         case cmd_topic_unsubscribe:
-            pick_promise(_topics, id)();
+            on_unsubscribe(id);
             break;
         case cmd_attribute_set:
             process_attribute_set(payload_part, std::move(att));
@@ -265,13 +345,14 @@ void Peer::Sender::cycle() {
     }
     _cur_waiting = std::move(_attachments.front());
     _attachments.pop();
-    _cur_waiting.invoke<&Sender::on_attachment_ready>(this);
+    _cur_waiting_target = _cur_waiting_target.template member_fn<&Sender::on_attachment_ready>(this);
+    _cur_waiting.register_target(_cur_waiting_target);
 }
 
 void Peer::Sender::on_attachment_ready(Future<BinaryPayload> *f) noexcept {
     try {
         const BinaryPayload &pl = *f;
-        if (!_owner_locked->_conn->send({
+        if (_force_stop || !_owner_locked->_conn->send({
             std::string_view(reinterpret_cast<const char *>(pl.data()), pl.size()),
             IConnection::Message::binary
         })) {
@@ -280,7 +361,8 @@ void Peer::Sender::on_attachment_ready(Future<BinaryPayload> *f) noexcept {
             cycle();
         }
         _flusher << [&]{return _owner_locked->_conn->flush();};
-        _flusher.invoke<&Sender::on_flush>(this);
+        _flusher_target = _flusher_target.member_fn<&Sender::on_flush>(this);
+        _flusher.register_target(_flusher_target);
     } catch (const std::exception &e) {
         _owner_locked->send(cmd_attachment_error, 0, e.what(), {});
     }
@@ -390,11 +472,12 @@ Future<Peer::Payload> Peer::rpc_call(const std::string_view &message, Attachment
     };
 }
 Future<Peer::Payload> Peer::rpc_server() {
-    return [&](auto promise) {
-        Core &c = *_core;
-        c._rpc = std::move(promise);
-    };
+    return _core->_rpc_lazy; //set lazy target
+}
 
+void Peer::Core::on_begin_rpc(Future<Payload>::Promise payload) noexcept {
+    //lazy operation
+    _rpc = std::move(payload);
 }
 
 void Peer::rpc_result(ID id, const std::string_view &response, Attachments &&attachments) {
@@ -411,7 +494,62 @@ Peer::ID Peer::create_subscription() {
     return c._id_gen++;
 }
 
-Future<Peer::Payload> Peer::receive(ID subscription) {
+bool Peer::Subscription::check() const {
+    auto core = _target.lock();
+    if (!core) return false;
+    Core &c = *core;
+    std::lock_guard _(c._mx);
+    return c._topics.find(_id) != c._topics.end();
+}
+
+bool Peer::Subscription::publish(const std::string_view &data, umq::Peer::Attachments &&attachments) {
+    auto core = _target.lock();
+    if (!core) return false;
+    Core &c = *core;
+    {
+        std::lock_guard _(c._mx);
+        if (c._topics.find(_id) == c._topics.end()) return false;
+    }
+    c.send(cmd_topic_update,_id, data, std::move(attachments));
+    return true;
+}
+
+void Peer::Subscription::close() {
+    auto core = _target.lock();
+    if (!core) return;
+    Core &c = *core;
+    {
+        std::lock_guard _(c._mx);
+        if (c._topics.find(_id) == c._topics.end()) return;
+    }
+    c.send(cmd_topic_close,_id, {}, {});
+}
+
+Peer::ID Peer::Subscription::get_id() const {
+    return _id;
+}
+
+std::optional<Peer> Peer::Subscription::get_peer() const {
+    auto core = _target.lock();
+    if (!core) return {};
+    return Peer(std::move(core));
+}
+
+Peer::Subscription::Subscription(std::shared_ptr<Peer::Core> target, ID id)
+    :_target(target),_id(id) {}
+
+bool Peer::Subscription::on_unsubscribe(std::function<void()> fn) {
+    auto core = _target.lock();
+    if (!core) return false;
+    Core &c = *core;
+    std::lock_guard _(c._mx);
+    auto iter = c._topics.find(_id);
+    if (iter == c._topics.end()) return false;
+    iter->second = std::move(fn);
+    return true;
+}
+
+Future<Peer::Payload> Peer::listen_subscription(ID subscription) {
     Core &c = *_core;
     std::lock_guard _(c._mx);
     return [&](auto promise){
@@ -419,31 +557,12 @@ Future<Peer::Payload> Peer::receive(ID subscription) {
     };
 }
 
-Future<void> Peer::begin_publish(ID subscription) {
+Peer::Subscription Peer::begin_publish(ID subscription) {
+
     Core &c = *_core;
     std::lock_guard _(c._mx);
-    return [&](auto promise) {
-        c._topics[subscription] = std::move(promise);
-    };
-}
-
-bool Peer::publish(ID subscription, const std::string_view &data, Attachments &&attachments) {
-    Core &c = *_core;
-    {
-        std::lock_guard _(c._mx);
-        if (c._topics.find(subscription) == c._topics.end()) return false;
-    }
-    c.send(cmd_topic_update, subscription, data, std::move(attachments));
-    return true;
-}
-
-void Peer::end_publish(ID subscription) {
-    Core &c = *_core;
-    Future<void>::Promise endp = c.pick_promise(c._topics, subscription);
-    if (endp) {
-        c.send(cmd_topic_close, subscription, {}, {});
-        endp();
-    }
+    c._topics.emplace(subscription, UnsubscribeNotify());
+    return Subscription(_core, subscription);
 }
 
 Peer::Callback Peer::create_callback_call() {
@@ -527,13 +646,23 @@ std::string_view Peer::errorMessage(unsigned int error) {
         case err_rejected: return "Client rejected";
         case err_unsupported_command: return "Unsupported command";
         case err_unsupported_version: return "Unsupported version";
-
+        case err_no_rpc: return "Not RPC server";
+        case err_rpc_route_error : return "No route to requested method";
+        case err_rpc_temporary_unavailable: return "Temporarily unavailable";
         default: return "Unknown error code";
     }
 }
 
+
 void Peer::close() {
+    //send close
     _core->_conn->send(IConnection::close_message);
+    //shutdown attach sender
+    _core->_attach_sender._force_stop = true;
+}
+void Peer::shutdown() {
+    //shutdown the receiver
+    _core->_conn->shutdown();
 }
 
 void Peer::toBase36(ID id, std::ostream &out) {
@@ -568,7 +697,7 @@ void Peer::set_attribute(const std::string_view &attribute_name,
     }, std::move(attachments));
 }
 
-void Peer::unset_attribute(const std::string_view &attribute_name) {
+void Peer::clear_attribute(const std::string_view &attribute_name) {
     _core->send(cmd_attribute_reset, 0, attribute_name, {});
 }
 
@@ -590,5 +719,6 @@ void Peer::Core::process_attribute_reset(const std::string_view &payload) {
     std::lock_guard _(_mx);
     _attributes.erase(std::string(payload));
 }
+
 
 }
